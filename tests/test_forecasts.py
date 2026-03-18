@@ -994,3 +994,231 @@ class TestEffectiveCloudPct:
         fb = _builder(hass, tunables)
         result = fb._effective_cloud_pct({"low": 100, "mid": 0, "high": 0})
         assert result > 50
+
+
+# ===================================================================
+# 9. Solcast Integration Tests (ha-solcast-solar)
+# ===================================================================
+
+
+def _make_solcast_detailed_forecast(
+    now: datetime, periods: int = 48, peak_kw: float = 5.0,
+) -> list[dict[str, Any]]:
+    """Create a realistic detailedForecast attribute matching ha-solcast-solar.
+
+    Generates 30-min periods with bell curve solar profile.
+    """
+    import math
+
+    forecast = []
+    for i in range(periods):
+        period_start = now + timedelta(minutes=30 * i)
+        hour = period_start.hour + period_start.minute / 60.0
+        # Bell curve: sunrise 6, sunset 18, peak at noon
+        if 6 <= hour <= 18:
+            intensity = math.exp(-0.5 * ((hour - 12) / 3) ** 2)
+            kw = peak_kw * intensity
+        else:
+            kw = 0.0
+        forecast.append({
+            "period_start": period_start.isoformat(),
+            "pv_estimate": round(kw, 3),
+            "pv_estimate10": round(kw * 0.7, 3),
+            "pv_estimate90": round(kw * 1.2, 3),
+        })
+    return forecast
+
+
+SOLCAST_ENTITIES = {
+    **DEFAULT_ENTITIES,
+    "solcast_forecast": "sensor.solcast_pv_forecast_forecast_today",
+}
+
+
+class TestSolcastIntegration:
+    """Tests for ha-solcast-solar as Priority 0 solar forecast source."""
+
+    async def test_solcast_used_when_present(
+        self, hass: HomeAssistant, tunables: MPCTunables,
+    ):
+        """Solcast entity present with valid data → used as priority 0."""
+        now = datetime(2026, 3, 18, 10, 0, tzinfo=timezone(timedelta(hours=11)))
+        forecast_data = _make_solcast_detailed_forecast(now)
+
+        hass.states.async_set(
+            "sensor.solcast_pv_forecast_forecast_today",
+            "25.5",
+            {"detailedForecast": forecast_data},
+        )
+
+        fb = _builder(hass, tunables, entities=SOLCAST_ENTITIES)
+        result = fb._get_solcast_ha_forecast(now)
+
+        assert result is not None
+        assert len(result) == STEPS_24H
+        assert max(result) > 0  # Has solar production
+
+    async def test_solcast_falls_through_when_missing(
+        self, hass: HomeAssistant, tunables: MPCTunables,
+    ):
+        """Solcast entity not in HA → returns None, falls through to VRM."""
+        now = datetime(2026, 3, 18, 10, 0, tzinfo=timezone(timedelta(hours=11)))
+        # Don't set the solcast entity
+        fb = _builder(hass, tunables, entities=SOLCAST_ENTITIES)
+        result = fb._get_solcast_ha_forecast(now)
+        assert result is None
+
+    async def test_solcast_falls_through_when_unavailable(
+        self, hass: HomeAssistant, tunables: MPCTunables,
+    ):
+        """Solcast entity exists but unavailable → returns None."""
+        hass.states.async_set(
+            "sensor.solcast_pv_forecast_forecast_today",
+            "unavailable",
+            {},
+        )
+        now = datetime(2026, 3, 18, 10, 0, tzinfo=timezone(timedelta(hours=11)))
+        fb = _builder(hass, tunables, entities=SOLCAST_ENTITIES)
+        result = fb._get_solcast_ha_forecast(now)
+        assert result is None
+
+    async def test_solcast_falls_through_when_no_detailed_forecast(
+        self, hass: HomeAssistant, tunables: MPCTunables,
+    ):
+        """Solcast entity has state but no detailedForecast attribute → None."""
+        hass.states.async_set(
+            "sensor.solcast_pv_forecast_forecast_today",
+            "25.5",
+            {},  # No detailedForecast attribute
+        )
+        now = datetime(2026, 3, 18, 10, 0, tzinfo=timezone(timedelta(hours=11)))
+        fb = _builder(hass, tunables, entities=SOLCAST_ENTITIES)
+        result = fb._get_solcast_ha_forecast(now)
+        assert result is None
+
+    async def test_solcast_output_length_288(
+        self, hass: HomeAssistant, tunables: MPCTunables,
+    ):
+        """Solcast forecast interpolated to exactly 288 steps (5-min × 24h)."""
+        now = datetime(2026, 3, 18, 8, 0, tzinfo=timezone(timedelta(hours=11)))
+        forecast_data = _make_solcast_detailed_forecast(now)
+        hass.states.async_set(
+            "sensor.solcast_pv_forecast_forecast_today",
+            "25.5",
+            {"detailedForecast": forecast_data},
+        )
+
+        fb = _builder(hass, tunables, entities=SOLCAST_ENTITIES)
+        result = fb._get_solcast_ha_forecast(now)
+
+        assert result is not None
+        assert len(result) == 288
+
+    async def test_solcast_no_negative_values(
+        self, hass: HomeAssistant, tunables: MPCTunables,
+    ):
+        """Solcast output never contains negative power values."""
+        now = datetime(2026, 3, 18, 10, 0, tzinfo=timezone(timedelta(hours=11)))
+        # Include a period with negative value (shouldn't happen but be safe)
+        forecast_data = _make_solcast_detailed_forecast(now)
+        forecast_data[0]["pv_estimate"] = -0.5  # Corrupt entry
+
+        hass.states.async_set(
+            "sensor.solcast_pv_forecast_forecast_today",
+            "25.5",
+            {"detailedForecast": forecast_data},
+        )
+
+        fb = _builder(hass, tunables, entities=SOLCAST_ENTITIES)
+        result = fb._get_solcast_ha_forecast(now)
+
+        assert result is not None
+        assert all(v >= 0 for v in result)
+
+    async def test_solcast_overrides_vrm(
+        self, hass: HomeAssistant, tunables: MPCTunables,
+    ):
+        """When both Solcast and VRM available, Solcast wins (priority 0)."""
+        now = datetime(2026, 3, 18, 10, 0, tzinfo=timezone(timedelta(hours=11)))
+
+        # Set up Solcast entity
+        forecast_data = _make_solcast_detailed_forecast(now, peak_kw=4.0)
+        hass.states.async_set(
+            "sensor.solcast_pv_forecast_forecast_today",
+            "20.0",
+            {"detailedForecast": forecast_data},
+        )
+
+        # Set up weather for day type classification
+        hass.states.async_set("weather.home", "sunny", {
+            "temperature": 25, "humidity": 50,
+        })
+        hass.states.async_set("sun.sun", "above_horizon", {
+            "next_setting": (now + timedelta(hours=8)).isoformat(),
+        })
+        hass.states.async_set("sensor.victron_battery_state_of_charge", "50")
+        hass.states.async_set("sensor.solar_power", "3000")
+        hass.states.async_set("sensor.victron_ac_consumption", "800")
+        hass.states.async_set("sensor.amber_general_price", "0.25", {
+            "forecasts": [{"per_kwh": 0.25}] * 48,
+        })
+        hass.states.async_set("sensor.amber_feed_in_price", "0.06", {
+            "forecasts": [{"per_kwh": 0.06}] * 48,
+        })
+
+        # Create VRM mock that would provide different data
+        vrm = MagicMock()
+        vrm.available = True
+        vrm.get_clearsky_envelope = AsyncMock(return_value={
+            3: [0, 0, 0, 0, 0, 0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0,
+                6.0, 5.0, 4.0, 3.0, 2.0, 1.0, 0, 0, 0, 0, 0, 0],
+        })
+        vrm.get_monthly_peak_kwh = AsyncMock(return_value={3: 35.0})
+
+        fb = _builder(hass, tunables, vrm=vrm, entities=SOLCAST_ENTITIES)
+        solar_kw, source, day_type = await fb._build_solar_forecast(now, 3000)
+
+        # Source should be solcast_ha, NOT clearsky_p*
+        assert source == "solcast_ha"
+        assert len(solar_kw) == 288
+
+    async def test_solcast_malformed_entries_skipped(
+        self, hass: HomeAssistant, tunables: MPCTunables,
+    ):
+        """Malformed entries in detailedForecast are skipped gracefully."""
+        now = datetime(2026, 3, 18, 10, 0, tzinfo=timezone(timedelta(hours=11)))
+        forecast_data = _make_solcast_detailed_forecast(now)
+        # Corrupt some entries
+        forecast_data[5] = {"bad": "data"}
+        forecast_data[10] = {"period_start": "not-a-date", "pv_estimate": 1.0}
+
+        hass.states.async_set(
+            "sensor.solcast_pv_forecast_forecast_today",
+            "25.5",
+            {"detailedForecast": forecast_data},
+        )
+
+        fb = _builder(hass, tunables, entities=SOLCAST_ENTITIES)
+        result = fb._get_solcast_ha_forecast(now)
+
+        # Should still work — just skips bad entries
+        assert result is not None
+        assert len(result) == 288
+
+    async def test_solcast_too_few_periods_falls_through(
+        self, hass: HomeAssistant, tunables: MPCTunables,
+    ):
+        """Fewer than 6 valid periods → returns None (falls through)."""
+        now = datetime(2026, 3, 18, 10, 0, tzinfo=timezone(timedelta(hours=11)))
+        # Only 3 periods — too few
+        forecast_data = _make_solcast_detailed_forecast(now, periods=3)
+
+        hass.states.async_set(
+            "sensor.solcast_pv_forecast_forecast_today",
+            "5.0",
+            {"detailedForecast": forecast_data},
+        )
+
+        fb = _builder(hass, tunables, entities=SOLCAST_ENTITIES)
+        result = fb._get_solcast_ha_forecast(now)
+        assert result is None
