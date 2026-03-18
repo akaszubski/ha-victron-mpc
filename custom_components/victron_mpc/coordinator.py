@@ -365,6 +365,10 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "genset_power": merged.get(
                 "genset_power", "sensor.victron_genset_power"
             ),
+            "solcast_forecast": merged.get(
+                "solcast_forecast",
+                "sensor.solcast_pv_forecast_forecast_today",
+            ),
         }
 
     # ------------------------------------------------------------------

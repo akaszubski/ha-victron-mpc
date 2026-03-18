@@ -228,6 +228,9 @@ class VictronMPCConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_WEATHER_ENTITY,
                         default="weather.home",
                     ): _WEATHER_SELECTOR,
+                    vol.Optional(
+                        "solcast_forecast",
+                    ): _SENSOR_SELECTOR,
                 }
             ),
         )

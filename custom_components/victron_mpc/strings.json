@@ -41,7 +41,8 @@
           "ac_consumption": "AC Consumption (Load)",
           "grid_power": "Grid Power",
           "genset_power": "Generator Power (optional)",
-          "weather_entity": "Weather Entity (for cloud forecast)"
+          "weather_entity": "Weather Entity (for cloud forecast)",
+          "solcast_forecast": "Solcast Forecast (optional, from ha-solcast-solar)"
         }
       },
       "vrm": {

@@ -5,6 +5,7 @@ HA state machine and async API clients to build the 5-minute interval arrays
 needed by the optimizer. Data source priority:
 
 Solar forecast:
+  0. ha-solcast-solar integration (satellite-based, most accurate if installed)
   1. Weather-classified VRM envelope (P90/P70/P40/P15 by day type)
   2. VRM actual hourly average (30d) + VRM daily scaling (fallback)
   3. HA history profile (fallback — requires recorder, left as TODO)
@@ -668,6 +669,78 @@ class ForecastBuilder:
     # Solar forecast
     # ------------------------------------------------------------------
 
+    def _get_solcast_ha_forecast(
+        self, now: datetime,
+    ) -> list[float] | None:
+        """Read solar forecast from ha-solcast-solar integration if installed.
+
+        Reads the detailedForecast attribute from sensor.solcast_pv_forecast_forecast_today
+        which provides 30-min resolution power forecasts (kW) with pv_estimate,
+        pv_estimate10, and pv_estimate90 fields.
+
+        Returns 5-min solar_kw array or None if unavailable.
+        """
+        # Check for ha-solcast-solar entity
+        solcast_entity = self._entities.get(
+            "solcast_forecast", "sensor.solcast_pv_forecast_forecast_today"
+        )
+        state = self._get_state(solcast_entity)
+        if state is None or state.state in ("unavailable", "unknown"):
+            return None
+
+        detailed = state.attributes.get("detailedForecast")
+        if not detailed or not isinstance(detailed, list):
+            # Try alternate attribute names
+            detailed = state.attributes.get("detailed_forecast")
+            if not detailed:
+                return None
+
+        # Extract 30-min power values (kW) starting from now
+        now_aware = now.astimezone()
+        forecast_30min: list[float] = []
+
+        for entry in detailed:
+            try:
+                period_start = entry.get("period_start", "")
+                if isinstance(period_start, str):
+                    dt = datetime.fromisoformat(period_start)
+                else:
+                    dt = period_start
+
+                # Only include future periods (or current)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=now_aware.tzinfo)
+                delta_h = (dt - now_aware).total_seconds() / 3600
+                if delta_h < -0.5:
+                    continue
+                if delta_h >= self._tunables.forecast_hours:
+                    break
+
+                # Use central estimate (pv_estimate), fallback to estimate
+                kw = float(
+                    entry.get("pv_estimate")
+                    or entry.get("estimate")
+                    or 0
+                )
+                forecast_30min.append(max(0.0, kw))
+            except (ValueError, TypeError, KeyError):
+                continue
+
+        if len(forecast_30min) < 6:
+            return None
+
+        # Interpolate 30-min → 5-min (each 30-min value → 6 × 5-min steps)
+        solar_kw = _interpolate_stepwise(forecast_30min, 6, self.N)
+
+        _LOGGER.info(
+            "Solar forecast: ha-solcast-solar (%d periods, "
+            "peak=%.1fkW, total=%.1fkWh)",
+            len(forecast_30min),
+            max(forecast_30min) if forecast_30min else 0,
+            sum(solar_kw) * self.dt_hours,
+        )
+        return solar_kw
+
     async def _build_solar_forecast(
         self, now: datetime, current_solar_w: float,
     ) -> tuple[list[float], str, str]:
@@ -677,6 +750,7 @@ class ForecastBuilder:
             Tuple of (solar_kw list, source name, day_type).
 
         Priority:
+            0. ha-solcast-solar integration (satellite-based, most accurate)
             1. Weather-classified VRM envelope
             2. VRM actual hourly average (30d) + daily scaling
             3. HA sensor history + VRM daily scaling (TODO)
@@ -694,6 +768,13 @@ class ForecastBuilder:
 
         # Select VRM percentile based on day type
         percentile = self._tunables.solar_day_type_percentiles.get(day_type, 0.90)
+
+        # Priority 0: ha-solcast-solar integration (satellite-based)
+        if solar_kw is None:
+            solcast_forecast = self._get_solcast_ha_forecast(now)
+            if solcast_forecast is not None:
+                solar_kw = solcast_forecast
+                source = "solcast_ha"
 
         # Priority 1: Weather-classified VRM envelope
         if solar_kw is None and self._vrm and self._vrm.available:
