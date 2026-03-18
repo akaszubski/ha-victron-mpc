@@ -59,8 +59,6 @@ SENSOR_DESCRIPTIONS: tuple[VictronMPCSensorDescription, ...] = (
         attr_key="effective_price",
         translation_key="effective_price",
         native_unit_of_measurement="$/kWh",
-        device_class=SensorDeviceClass.MONETARY,
-        state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:currency-usd",
     ),
     VictronMPCSensorDescription(
@@ -94,8 +92,6 @@ SENSOR_DESCRIPTIONS: tuple[VictronMPCSensorDescription, ...] = (
         attr_key="buy_price",
         translation_key="buy_price",
         native_unit_of_measurement="$/kWh",
-        device_class=SensorDeviceClass.MONETARY,
-        state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:cash-minus",
     ),
     VictronMPCSensorDescription(
@@ -103,8 +99,6 @@ SENSOR_DESCRIPTIONS: tuple[VictronMPCSensorDescription, ...] = (
         attr_key="sell_price",
         translation_key="sell_price",
         native_unit_of_measurement="$/kWh",
-        device_class=SensorDeviceClass.MONETARY,
-        state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:cash-plus",
     ),
     VictronMPCSensorDescription(
@@ -120,8 +114,6 @@ SENSOR_DESCRIPTIONS: tuple[VictronMPCSensorDescription, ...] = (
         attr_key="solar_forecast_today",
         translation_key="solar_forecast_today",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:solar-power-variant",
     ),
     VictronMPCSensorDescription(
