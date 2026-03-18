@@ -103,8 +103,8 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if vrm_token and vrm_install_id:
             self._vrm_client = VRMClient(
                 session=session,
-                token=vrm_token,
-                installation_id=int(vrm_install_id),
+                access_token=vrm_token,
+                installation_id=str(vrm_install_id),
             )
             LOGGER.info("VRM client initialized (installation %s)", vrm_install_id)
 
