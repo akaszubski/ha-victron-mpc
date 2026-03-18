@@ -4,13 +4,15 @@ Fetches cloud_cover_low/mid/high from Open-Meteo free API for accurate
 solar derating. High cirrus barely blocks solar while low stratus
 blocks heavily — the layer breakdown is critical for accurate forecasts.
 
+Ported from scripts/mpc/forecasts.py _fetch_cloud_layers() + _effective_cloud_pct().
+
 API: https://api.open-meteo.com/v1/forecast (free, no key required)
 """
 
 from __future__ import annotations
 
 import time
-from typing import Any
+from datetime import datetime
 
 from aiohttp import ClientSession
 
@@ -18,7 +20,7 @@ from ..const import LOGGER
 
 _CACHE_TTL = 1800  # 30 min — weather changes
 
-# Default cloud layer weights (from working config.py)
+# Default cloud layer weights (from working config.py MPCTunables)
 DEFAULT_CLOUD_WEIGHTS = {
     "high": 0.15,   # Cirrus — thin ice crystals, minimal solar impact
     "mid": 0.5,     # Altostratus/altocumulus — moderate blocking
@@ -27,7 +29,10 @@ DEFAULT_CLOUD_WEIGHTS = {
 
 
 class OpenMeteoClient:
-    """Async Open-Meteo cloud layer client with caching."""
+    """Async Open-Meteo cloud layer client with caching.
+
+    Ported from ForecastBuilder._fetch_cloud_layers().
+    """
 
     def __init__(
         self,
@@ -39,33 +44,74 @@ class OpenMeteoClient:
         self._session = session
         self._lat = latitude
         self._lon = longitude
-        self._cache: dict[str, Any] | None = None
+        self._cache: dict[int, dict[str, float]] | None = None
         self._cache_time: float = 0
 
     async def fetch_cloud_layers(
         self,
+        now: datetime | None = None,
+        forecast_hours: int = 24,
     ) -> dict[int, dict[str, float]] | None:
         """Fetch hourly cloud_cover_low/mid/high for next 24h.
 
-        Returns: {hour: {"low": %, "mid": %, "high": %}} or None on failure.
+        Returns: {hour_offset: {"low": %, "mid": %, "high": %}} or None.
         """
         # Check cache
         if self._cache and (time.monotonic() - self._cache_time) < _CACHE_TTL:
             return self._cache
 
-        # TODO: Port from scripts/mpc/forecasts.py _fetch_cloud_layers()
-        # url = (
-        #     f"https://api.open-meteo.com/v1/forecast"
-        #     f"?latitude={self._lat}&longitude={self._lon}"
-        #     f"&hourly=cloud_cover_low,cloud_cover_mid,cloud_cover_high"
-        #     f"&forecast_days=2&timezone=auto"
-        # )
-        # async with self._session.get(url) as resp:
-        #     data = await resp.json()
-        #     ...
+        if now is None:
+            now = datetime.now()
 
-        LOGGER.debug("Open-Meteo cloud layer fetch not yet implemented")
-        return None
+        try:
+            url = (
+                f"https://api.open-meteo.com/v1/forecast"
+                f"?latitude={self._lat}&longitude={self._lon}"
+                f"&hourly=cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high"
+                f"&timezone=auto&forecast_days=2"
+            )
+            async with self._session.get(url, timeout=10) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+
+            hourly = data.get("hourly", {})
+            times = hourly.get("time", [])
+            cover_low = hourly.get("cloud_cover_low", [])
+            cover_mid = hourly.get("cloud_cover_mid", [])
+            cover_high = hourly.get("cloud_cover_high", [])
+
+            if not times or not cover_low:
+                return None
+
+            now_aware = now.astimezone()
+            layers: dict[int, dict[str, float]] = {}
+
+            for i, t_str in enumerate(times):
+                try:
+                    dt = datetime.fromisoformat(t_str)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=now_aware.tzinfo)
+                    delta_h = (dt - now_aware).total_seconds() / 3600
+                    if -0.5 <= delta_h < forecast_hours:
+                        idx = max(0, int(delta_h))
+                        layers[idx] = {
+                            "low": float(cover_low[i]) if i < len(cover_low) else 0,
+                            "mid": float(cover_mid[i]) if i < len(cover_mid) else 0,
+                            "high": float(cover_high[i]) if i < len(cover_high) else 0,
+                        }
+                except (ValueError, TypeError):
+                    continue
+
+            if len(layers) < 6:
+                return None
+
+            self._cache = layers
+            self._cache_time = time.monotonic()
+            return layers
+
+        except Exception:
+            LOGGER.debug("Open-Meteo cloud layers unavailable", exc_info=True)
+            return None
 
     @staticmethod
     def effective_cloud_pct(
