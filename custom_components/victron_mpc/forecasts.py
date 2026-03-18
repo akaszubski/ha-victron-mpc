@@ -763,11 +763,20 @@ class ForecastBuilder:
         Scale factor < 1.0 means Solcast was reduced.
         """
         if not self._vrm or not self._vrm.available:
+            _LOGGER.warning(
+                "Solcast used WITHOUT VRM shading correction — forecasts "
+                "may be significantly over-estimated. Configure VRM API "
+                "credentials for accurate solar predictions."
+            )
             return solar_kw, 1.0
 
         # Get P90 envelope — the maximum realistic production per hour
         envelope = await self._vrm.get_clearsky_envelope(percentile=0.90)
         if not envelope:
+            _LOGGER.warning(
+                "VRM P90 envelope unavailable — Solcast used without "
+                "shading correction this cycle"
+            )
             return solar_kw, 1.0
 
         month = now.month
