@@ -1,0 +1,13 @@
+{
+  "domain": "victron_mpc",
+  "name": "Victron MPC Battery Optimizer",
+  "codeowners": ["@akaszubski"],
+  "config_flow": true,
+  "dependencies": ["modbus"],
+  "documentation": "https://github.com/akaszubski/ha-victron-mpc",
+  "integration_type": "device",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/akaszubski/ha-victron-mpc/issues",
+  "requirements": ["scipy>=1.12.0", "numpy>=1.26.0"],
+  "version": "0.1.0"
+}

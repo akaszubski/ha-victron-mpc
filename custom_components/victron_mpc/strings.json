@@ -1,0 +1,113 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Victron Modbus Connection",
+        "description": "Connect to your Victron Cerbo GX via Modbus TCP. The default unit IDs work for most single-inverter setups.",
+        "data": {
+          "modbus_host": "Cerbo GX IP Address",
+          "modbus_port": "Modbus TCP Port",
+          "modbus_slave_system": "System Unit ID",
+          "modbus_slave_vebus": "VE.Bus Unit ID (Inverter)"
+        }
+      },
+      "battery": {
+        "title": "Battery System",
+        "description": "Enter your battery specifications. These determine charge/discharge limits and capacity constraints.",
+        "data": {
+          "battery_capacity_kwh": "Battery Capacity (kWh)",
+          "max_charge_kw": "Max Charge Rate (kW)",
+          "max_discharge_kw": "Max Discharge Rate (kW)",
+          "soc_floor_pct": "Minimum SoC Floor (%)"
+        }
+      },
+      "amber": {
+        "title": "Amber Electric",
+        "description": "Select your Amber Electric entities. These provide wholesale pricing and spike detection for optimization.",
+        "data": {
+          "amber_price": "General Price",
+          "amber_forecast": "Price Forecast",
+          "amber_feedin": "Feed-in Price",
+          "amber_feedin_forecast": "Feed-in Forecast",
+          "amber_spike": "Price Spike Sensor"
+        }
+      },
+      "victron_sensors": {
+        "title": "Victron Sensors",
+        "description": "Select the Victron sensor entities from your Modbus integration. These provide real-time system state.",
+        "data": {
+          "battery_soc": "Battery State of Charge",
+          "solar_power": "Solar Power (PV)",
+          "ac_consumption": "AC Consumption (Load)",
+          "grid_power": "Grid Power",
+          "genset_power": "Generator Power (optional)",
+          "weather_entity": "Weather Entity (for cloud forecast)"
+        }
+      },
+      "vrm": {
+        "title": "VRM API (Optional)",
+        "description": "Victron VRM provides historical solar data for accurate forecasting. Leave blank to use HA history instead.",
+        "data": {
+          "vrm_token": "VRM Access Token",
+          "vrm_installation_id": "VRM Installation ID"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to Modbus at the specified address",
+      "modbus_read_failed": "Connected but failed to read Victron registers — check unit IDs",
+      "vrm_auth_failed": "VRM API authentication failed — check token",
+      "vrm_connect_failed": "Cannot reach VRM API — check internet connection",
+      "already_configured": "This Victron system is already configured"
+    },
+    "abort": {
+      "already_configured": "This Victron system is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "MPC Optimizer Tunables",
+        "description": "Adjust optimization parameters. Changes take effect on the next 5-minute cycle.",
+        "data": {
+          "battery_wear_cost": "Battery Wear Cost ($/kWh)",
+          "sunset_reward": "Sunset SoC Reward ($/kWh)",
+          "overnight_hold_reward": "Overnight Hold Reward ($/kWh)",
+          "soc_floor_pct": "SoC Floor (%)",
+          "overnight_min_soc_pct": "Overnight Minimum SoC (%)",
+          "shadow_mode": "Shadow Mode (log only, no register writes)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "battery_plan": { "name": "Battery Plan" },
+      "decision": { "name": "Decision" },
+      "effective_price": { "name": "Effective Price" },
+      "cost_24h": { "name": "24h Projected Cost" },
+      "solar_input": { "name": "Solar Input" },
+      "load_input": { "name": "Load Input" },
+      "buy_price": { "name": "Buy Price" },
+      "sell_price": { "name": "Sell Price" },
+      "cloud_coverage": { "name": "Cloud Coverage" },
+      "solar_forecast_today": { "name": "Solar Forecast Today" },
+      "solve_time": { "name": "Solver Time" }
+    },
+    "number": {
+      "battery_wear_cost": { "name": "Battery Wear Cost" },
+      "sunset_reward": { "name": "Sunset Reward" },
+      "overnight_hold_reward": { "name": "Overnight Hold Reward" },
+      "soc_floor": { "name": "SoC Floor" },
+      "overnight_min_soc": { "name": "Overnight Min SoC" },
+      "load_inflation": { "name": "Load Inflation" }
+    },
+    "switch": {
+      "shadow_mode": { "name": "Shadow Mode" }
+    },
+    "binary_sensor": {
+      "stale_data": { "name": "Data Stale" },
+      "spike_active": { "name": "Spike Override Active" }
+    }
+  }
+}
