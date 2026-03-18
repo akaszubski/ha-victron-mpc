@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-03-18
+
+### Added
+
+- **Solcast solar forecast integration**: Auto-detects [ha-solcast-solar](https://github.com/BJReplay/ha-solcast-solar) HACS integration for satellite-based solar forecasts calibrated to your specific rooftop
+- Solcast is now Priority 0 in the solar forecast chain (most accurate), with automatic fallthrough to VRM when unavailable
+- Optional Solcast entity picker in config flow Step 4 (Victron Sensors)
+- Cloud derating is automatically skipped when Solcast is active (Solcast already accounts for clouds, shading, and panel orientation)
+- New `solar_forecast_source` value: `solcast_ha`
+
 ## [0.1.0] - 2026-03-18
 
 ### Added
@@ -27,4 +37,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Diagnostics**: Downloadable diagnostics dump with redacted credentials
 - **Documentation**: Setup guide, technical deep-dive, tuning guide, troubleshooting, full entity reference with example Lovelace cards
 
+[0.2.0]: https://github.com/akaszubski/ha-victron-mpc/releases/tag/v0.2.0
 [0.1.0]: https://github.com/akaszubski/ha-victron-mpc/releases/tag/v0.1.0

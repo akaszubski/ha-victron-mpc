@@ -118,6 +118,34 @@ The Victron ESS Assistant must be installed and configured. Without it, register
 
 ---
 
+## Solcast Issues
+
+### Solcast Entity Not Found
+
+If `solar_forecast_source` never shows `solcast_ha` even though you installed ha-solcast-solar:
+
+1. **Verify the entity exists**: Check that `sensor.solcast_pv_forecast_forecast_today` appears in **Developer Tools** > **States**
+2. **Check the entity name**: If you renamed the entity or have multiple Solcast configurations, the auto-detection may not find it. Select the correct entity in the MPC config flow Step 4 (Victron Sensors > Solcast Forecast Entity)
+3. **Verify the attribute**: The entity must have a `detailedForecast` attribute containing an array of 30-minute forecast entries with `pv_estimate` fields
+4. **Restart HA**: After installing ha-solcast-solar, a full HA restart is required for the entity to become available
+
+### Solcast Rate Limits
+
+The free Solcast hobbyist account allows 10 API calls per day. If you exceed this:
+
+- Solcast data goes stale (last successful fetch continues to be used until midnight)
+- MPC automatically falls through to VRM-based forecasting when Solcast data is too old
+- The `solar_forecast_source` attribute will change from `solcast_ha` to a VRM source
+- Consider spacing Solcast update automations to every 2-3 hours (4-6 calls during daylight covers the day well)
+
+### Solcast Data Looks Wrong
+
+1. **Check rooftop config**: Log in to [toolkit.solcast.com.au](https://toolkit.solcast.com.au/) and verify panel orientation, tilt, capacity, and location
+2. **Compare with actuals**: Check `solar_forecast_source: solcast_ha` on the Solar Forecast Today sensor and compare the forecast kWh with actual production over several days
+3. **Multiple roof planes**: If you have panels on multiple roof faces, ensure all are configured in Solcast. The ha-solcast-solar integration aggregates them automatically
+
+---
+
 ## Solar Forecast Inaccurate
 
 ### Always Overestimating
@@ -130,9 +158,11 @@ The Victron ESS Assistant must be installed and configured. Without it, register
 
 ### Always Underestimating
 
-- Check if VRM API is working (Solar Forecast Today sensor's `solar_forecast_source`)
+- Check if Solcast is available (Solar Forecast Today sensor's `solar_forecast_source`)
+  - `solcast_ha` means Solcast is active (best accuracy)
   - `clearsky_p90` through `clearsky_p15` means VRM data is being used (good)
-  - `ha_history` or `bell_curve` means VRM is unavailable (less accurate)
+  - `ha_history` or `bell_curve` means both Solcast and VRM are unavailable (less accurate)
+- If Solcast is installed but not being used, see the "Solcast Issues" section above
 - Verify your VRM token has not expired
 
 ### No VRM Data

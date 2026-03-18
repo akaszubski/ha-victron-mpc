@@ -12,6 +12,7 @@ Before installing, confirm the following:
 - [ ] **Victron sensor entities** available in HA (battery SoC, solar power, AC consumption, grid power)
 - [ ] **Weather integration** configured (met.no `weather.home` or similar)
 - [ ] **(Optional)** VRM account with API access token
+- [ ] **(Optional)** [ha-solcast-solar](https://github.com/BJReplay/ha-solcast-solar) installed via HACS (for satellite-based solar forecasts)
 
 ## Enabling Modbus TCP on Cerbo GX
 
@@ -26,6 +27,25 @@ Unit IDs for most single-inverter setups:
 - **VE.Bus unit ID**: 227 (MultiPlus/Quattro inverter)
 
 If you have multiple inverters, check VRM > Device List for your specific unit IDs.
+
+## Setting Up Solcast (Optional, Recommended)
+
+Solcast provides the most accurate solar forecasts by using satellite imagery calibrated to your specific rooftop. When installed, MPC auto-detects it -- no hard dependency.
+
+### Install ha-solcast-solar
+
+1. Open **HACS** in your Home Assistant instance
+2. Search for **Solcast PV Forecast** (by BJReplay)
+3. Click **Download** and restart Home Assistant
+4. Go to **Settings** > **Devices & Services** > **Add Integration** > **Solcast PV Forecast**
+5. Enter your Solcast API key (get a free hobbyist account at [solcast.com](https://solcast.com/) -- 10 API calls/day)
+6. Configure your rooftop(s) in the Solcast dashboard (panel orientation, tilt, location)
+
+After setup, verify the entity `sensor.solcast_pv_forecast_forecast_today` exists and has a `detailedForecast` attribute with 30-minute power values.
+
+### Select in MPC Config Flow
+
+In the MPC config flow **Step 4** (Victron Sensors), an optional **Solcast Forecast Entity** picker appears. Select `sensor.solcast_pv_forecast_forecast_today` if available. If left empty, MPC will still auto-detect the entity by its default name.
 
 ## Getting a VRM API Token
 
@@ -95,6 +115,7 @@ Select the Victron entities from your existing HA Modbus integration:
 | AC Consumption (Load) | `sensor.victron_ac_consumption` | Current household load in watts |
 | Grid Power | `sensor.victron_grid_power` | Current grid import/export in watts |
 | Generator Power (optional) | -- | Genset power if you have one |
+| Solcast Forecast Entity (optional) | `sensor.solcast_pv_forecast_forecast_today` | Solcast satellite solar forecast (auto-detected if installed) |
 | Weather Entity | `weather.home` | Weather forecast for cloud data |
 
 ### Step 5: VRM API (Optional)

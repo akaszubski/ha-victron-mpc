@@ -56,7 +56,7 @@ All entities are grouped under a single **Victron MPC Battery Optimizer** device
 | `override_reason` | string | Override explanation (empty if no override) |
 | `cloud_coverage` | int | Total cloud coverage from weather entity |
 | `weather` | string | Weather condition string |
-| `solar_forecast_source` | string | Active solar forecast source (e.g., `clearsky_p90`) |
+| `solar_forecast_source` | string | Active solar forecast source (e.g., `solcast_ha`, `clearsky_p90`, `clearsky_p40`) |
 | `solar_day_type` | string | Weather classification (clear/partly_cloudy/overcast/rain) |
 | `battery_soc_pct` | float | Current battery SoC |
 | `current_solar_w` | float | Current solar production in watts |
@@ -181,7 +181,7 @@ All entities are grouped under a single **Victron MPC Battery Optimizer** device
 | Attribute | Type | Description |
 |-----------|------|-------------|
 | `solar_derate` | float | Cloud derating factor applied (0.0-1.0) |
-| `solar_forecast_source` | string | Active forecast source |
+| `solar_forecast_source` | string | Active forecast source (`solcast_ha`, `clearsky_p90`, `vrm_30d_avg`, `ha_history`, `bell_curve`) |
 | `solar_day_type` | string | Weather classification |
 | `load_forecast_source` | string | Load forecast source |
 | `seasonal_load_factor` | float | Seasonal load multiplier |

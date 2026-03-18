@@ -24,6 +24,7 @@ Typical savings are 20-40% on electricity costs compared to a fixed SoC strategy
 - **LP-optimized dispatch** -- 288-step (5-min) rolling horizon via scipy HiGHS solver (~50ms per solve)
 - **Amber Electric integration** -- wholesale buy/sell pricing, 30h forecast, spike detection
 - **Direct Modbus writes** -- R2901 (ESS min SoC) and R2706 (max grid feed-in) via Victron Cerbo GX
+- **Solcast solar forecast** -- auto-detects [ha-solcast-solar](https://github.com/BJReplay/ha-solcast-solar) for satellite-based rooftop forecasts (optional, highest priority)
 - **Weather-classified solar forecast** -- VRM historical percentiles (P90/P70/P40/P15) selected by day type
 - **Cloud layer derating** -- Open-Meteo low/mid/high altitude cloud weighting for accurate solar adjustment
 - **Override safety** -- automatic spike discharge, negative pricing charge, stale data fallback
@@ -46,6 +47,7 @@ Typical savings are 20-40% on electricity costs compared to a fixed SoC strategy
 | **Amber Electric** | Active account with the [HA Amber integration](https://www.home-assistant.io/integrations/amber/) configured |
 | **HA Modbus** | [Modbus integration](https://www.home-assistant.io/integrations/modbus/) configured for your Cerbo GX |
 | **VRM account** | Optional but recommended -- provides 180-day solar production history for forecasting |
+| **ha-solcast-solar** | Optional -- [HACS integration](https://github.com/BJReplay/ha-solcast-solar) for satellite-based solar forecasts (highest accuracy, free hobbyist tier: 10 API calls/day) |
 
 ## Installation
 
@@ -73,7 +75,7 @@ After installation:
    - **Step 1**: Victron Modbus connection (Cerbo GX IP, port, unit IDs)
    - **Step 2**: Battery specifications (capacity, charge/discharge rates)
    - **Step 3**: Amber Electric entity selection (price, forecast, spike sensors)
-   - **Step 4**: Victron sensor entity selection (SoC, solar, load, grid)
+   - **Step 4**: Victron sensor entity selection (SoC, solar, load, grid, optional Solcast entity)
    - **Step 5**: VRM API credentials (optional -- for solar forecast accuracy)
 4. The integration starts in **shadow mode** -- it logs decisions without writing registers
 5. Review decisions for a few days via the Battery Plan and Decision sensors
@@ -132,7 +134,7 @@ See [docs/ENTITIES.md](docs/ENTITIES.md) for detailed attribute documentation an
 Every 5 minutes, the DataUpdateCoordinator runs a full optimization cycle:
 
 1. **Reads state** from HA entities (battery SoC, solar power, load, Amber prices)
-2. **Fetches forecasts** from VRM (solar history), Open-Meteo (cloud layers), met.no (weather)
+2. **Fetches forecasts** from Solcast (if available), VRM (solar history), Open-Meteo (cloud layers), met.no (weather)
 3. **Classifies the day** as clear/partly_cloudy/overcast/rain based on effective cloud coverage
 4. **Builds a 24-hour forecast** of solar production, household load, and buy/sell prices
 5. **Solves a Linear Program** (scipy HiGHS, 288 timesteps) minimizing total electricity cost

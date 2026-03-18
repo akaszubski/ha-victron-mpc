@@ -147,14 +147,19 @@ Check the Decision sensor's `buy_price_actual` attribute to see what overnight p
 
 ### "Solar forecast too optimistic"
 
-1. Check the Solar Forecast Today sensor's `solar_day_type` attribute -- is the classification matching reality?
+1. Check the Solar Forecast Today sensor's `solar_forecast_source` attribute
+   - If `solcast_ha`: Solcast is active and should be highly accurate. If still overestimating, check your Solcast rooftop configuration (panel orientation, tilt, shading) at [solcast.com](https://toolkit.solcast.com.au/)
+   - If using VRM sources: check `solar_day_type` -- is the classification matching reality?
 2. If the Cloud Coverage sensor shows `cloud_source: met.no_total` instead of `open-meteo_layers`, Open-Meteo may be down and the fallback is less accurate
 3. Check `effective_cloud_pct` vs actual conditions -- high cirrus should show low effective cloud (10-15%), not 100%
 
+**Note**: If you have Solcast installed, cloud layer tuning is less critical for solar forecasting because Solcast already accounts for clouds, shading, and panel orientation in its satellite-based model. The cloud coverage sensor and Open-Meteo data still update for dashboard display and day-type classification.
+
 ### "Solar forecast too pessimistic"
 
-1. Check if the mid-day adjustment is working -- the `solar_forecast_source` should change from e.g., `clearsky_p40` to `clearsky_p70` if actual production exceeds the forecast
-2. This typically self-corrects after 10am when the mid-day adjustment fires
+1. Check if Solcast is available -- if `solar_forecast_source` is `solcast_ha`, the forecast should be well-calibrated. If Solcast is installed but not being used, check the Troubleshooting guide for Solcast entity issues
+2. If using VRM sources, check if the mid-day adjustment is working -- the `solar_forecast_source` should change from e.g., `clearsky_p40` to `clearsky_p70` if actual production exceeds the forecast
+3. This typically self-corrects after 10am when the mid-day adjustment fires
 
 ### "Grid charging at too-high prices"
 

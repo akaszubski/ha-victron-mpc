@@ -80,9 +80,23 @@ This means the optimizer naturally discharges during moderate overnight pricing 
 
 ---
 
-## Solar Forecast: Weather-Classified VRM Percentile
+## Solar Forecast
 
-Solar forecasting accounts for physical shading by using actual production history from VRM, classified by weather conditions.
+The integration uses a multi-level forecast priority chain, starting with the most accurate source available.
+
+### Priority 0: Solcast (ha-solcast-solar)
+
+If the [ha-solcast-solar](https://github.com/BJReplay/ha-solcast-solar) HACS integration is installed and configured, MPC auto-detects it and uses it as the primary solar forecast source. Solcast provides satellite-based forecasts calibrated to your specific rooftop, including panel orientation, tilt, and local shading.
+
+The entity `sensor.solcast_pv_forecast_forecast_today` provides 30-minute resolution power forecasts (kW) with `pv_estimate`, `pv_estimate10`, and `pv_estimate90` fields in its `detailedForecast` attribute. MPC interpolates these to 5-minute steps.
+
+Because Solcast already accounts for clouds, shading, and panel orientation, the Open-Meteo cloud derating is **not applied** when Solcast is the active source (the cloud_coverage sensor still updates independently for dashboard use).
+
+When Solcast data is unavailable (entity missing, stale, or API rate-limited), the integration automatically falls through to VRM-based forecasting.
+
+### Priority 1-4: VRM and Fallbacks
+
+When Solcast is not available, solar forecasting uses actual production history from VRM, classified by weather conditions.
 
 ### Step 1: Classify Day Type
 
@@ -135,9 +149,10 @@ Where `impact` defaults to 0.75 and `floor` defaults to 0.50.
 
 ### Forecast Priority Chain
 
-If VRM data is unavailable, the integration falls through to less accurate sources:
+The integration tries each source in order, falling through when one is unavailable:
 
-1. **Weather-classified VRM envelope** (best) -- P90/P70/P40/P15 based on day type
+0. **ha-solcast-solar** (satellite, most accurate) -- rooftop-calibrated, cloud-aware, no derating needed
+1. **Weather-classified VRM envelope** -- P90/P70/P40/P15 based on day type
 2. **VRM 30-day actual average** -- scaled by VRM daily total
 3. **HA sensor history** -- 7 days of solar power sensor data
 4. **Synthetic bell curve** (last resort) -- Gaussian scaled to estimated daily kWh
@@ -238,6 +253,7 @@ The optimizer outputs one of these modes, visible in the Decision sensor:
 | Source | What | How |
 |--------|------|-----|
 | **Amber Electric** | Wholesale pricing, 30h forecast, spike detection | HA Amber integration entities |
+| **Solcast (ha-solcast-solar)** | Satellite-based solar forecast (optional, Priority 0) | HA entity auto-detection |
 | **VRM Portal** | 180-day solar history, consumption forecasts | API via VRM access token |
 | **Open-Meteo** | Cloud layer data (low/mid/high altitude) | Free API, no key, uses HA lat/lon |
 | **met.no** | Weather forecast (cloud, precipitation) | HA weather entity |
