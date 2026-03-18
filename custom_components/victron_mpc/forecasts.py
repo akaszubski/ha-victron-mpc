@@ -731,15 +731,87 @@ class ForecastBuilder:
 
         # Interpolate 30-min → 5-min (each 30-min value → 6 × 5-min steps)
         solar_kw = _interpolate_stepwise(forecast_30min, 6, self.N)
+        solcast_total = sum(solar_kw) * self.dt_hours
 
         _LOGGER.info(
-            "Solar forecast: ha-solcast-solar (%d periods, "
+            "Solar forecast: ha-solcast-solar raw (%d periods, "
             "peak=%.1fkW, total=%.1fkWh)",
             len(forecast_30min),
             max(forecast_30min) if forecast_30min else 0,
-            sum(solar_kw) * self.dt_hours,
+            solcast_total,
         )
         return solar_kw
+
+    async def _cap_solcast_with_vrm(
+        self, solar_kw: list[float], now: datetime,
+    ) -> tuple[list[float], float]:
+        """Apply VRM hourly production envelope as a shading mask to Solcast.
+
+        Solcast doesn't know about site-specific shading — trees, buildings,
+        roof obstructions that vary by hour and season. VRM has years of
+        actual production data that captures these patterns.
+
+        Uses the VRM P90 envelope (best-case per hour per month) as a
+        per-hour ceiling. Each hour of Solcast is capped at the VRM P90
+        value for that hour. This preserves Solcast's cloud-awareness
+        while preventing physically impossible predictions.
+
+        The envelope updates naturally as seasons change — VRM data is
+        fetched with 24h cache TTL, so shading patterns stay current.
+
+        Returns (shaped_solar_kw, scale_factor).
+        Scale factor < 1.0 means Solcast was reduced.
+        """
+        if not self._vrm or not self._vrm.available:
+            return solar_kw, 1.0
+
+        # Get P90 envelope — the maximum realistic production per hour
+        envelope = await self._vrm.get_clearsky_envelope(percentile=0.90)
+        if not envelope:
+            return solar_kw, 1.0
+
+        month = now.month
+        hourly_ceiling = envelope.get(month)
+        if not hourly_ceiling:
+            for offset in [1, -1, 2, -2]:
+                m = ((month - 1 + offset) % 12) + 1
+                hourly_ceiling = envelope.get(m)
+                if hourly_ceiling:
+                    break
+
+        if not hourly_ceiling or sum(hourly_ceiling) <= 0:
+            return solar_kw, 1.0
+
+        # Reorder ceiling to start from current hour
+        current_hour = now.hour
+        ceiling = hourly_ceiling[current_hour:] + hourly_ceiling[:current_hour]
+
+        # Apply per-hour cap: each 5-min step capped at its hour's VRM P90
+        steps_per_hour = self._tunables.steps_per_hour
+        solcast_total = 0.0
+        capped_total = 0.0
+        capped = []
+
+        for i, kw in enumerate(solar_kw):
+            hour_idx = min(i // steps_per_hour, len(ceiling) - 1)
+            vrm_max = ceiling[hour_idx]
+            capped_kw = min(kw, vrm_max)
+            capped.append(capped_kw)
+            solcast_total += kw
+            capped_total += capped_kw
+
+        scale = capped_total / solcast_total if solcast_total > 0 else 1.0
+
+        if scale < 0.99:
+            _LOGGER.info(
+                "Solcast shaped by VRM P90 envelope: %.1fkWh -> %.1fkWh "
+                "(scale=%.2f, month=%d, shading mask applied per-hour)",
+                solcast_total * self.dt_hours,
+                capped_total * self.dt_hours,
+                scale, month,
+            )
+
+        return capped, scale
 
     async def _build_solar_forecast(
         self, now: datetime, current_solar_w: float,
@@ -770,11 +842,18 @@ class ForecastBuilder:
         percentile = self._tunables.solar_day_type_percentiles.get(day_type, 0.90)
 
         # Priority 0: ha-solcast-solar integration (satellite-based)
+        # Solcast doesn't account for site-specific shading, so we cap
+        # against VRM's actual best-ever production for this month.
         if solar_kw is None:
             solcast_forecast = self._get_solcast_ha_forecast(now)
             if solcast_forecast is not None:
+                solcast_forecast, vrm_scale = await self._cap_solcast_with_vrm(
+                    solcast_forecast, now,
+                )
                 solar_kw = solcast_forecast
                 source = "solcast_ha"
+                if vrm_scale < 1.0:
+                    source = f"solcast_ha_capped_{vrm_scale:.0%}"
 
         # Priority 1: Weather-classified VRM envelope
         if solar_kw is None and self._vrm and self._vrm.available:
