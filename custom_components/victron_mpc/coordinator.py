@@ -699,7 +699,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             pass
 
         # Mobile push notification
-        for target in ("notify.mobile_app_ak_iphone", "notify.mobile_app_skiphone"):
+        for target in ("notify.mobile_app_ak_iphone",):
             try:
                 await self.hass.services.async_call(
                     target.split(".")[0],
