@@ -108,7 +108,8 @@
     },
     "binary_sensor": {
       "stale_data": { "name": "Data Stale" },
-      "spike_active": { "name": "Spike Override Active" }
+      "spike_active": { "name": "Spike Override Active" },
+      "modbus_healthy": { "name": "Modbus Connected" }
     }
   }
 }

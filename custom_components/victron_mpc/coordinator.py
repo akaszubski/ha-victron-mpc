@@ -86,6 +86,15 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "open_meteo": {"down_since": None, "alerted": False},
         }
 
+        # Modbus write health tracking
+        self._modbus_consecutive_failures: int = 0
+        self._modbus_last_success: datetime | None = None
+        self._modbus_alerted: bool = False
+
+        # Amber defensive discharge state
+        self._amber_unavailable_since: datetime | None = None
+        self._last_known_buy_price: float = 0.30
+
     async def _async_setup(self) -> None:
         """One-time setup called during first refresh (HA 2024.8+).
 
@@ -248,9 +257,42 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
 
             # ----------------------------------------------------------
-            # Phase 5: Apply overrides (spike, negative pricing)
+            # Phase 5: Check Amber health + apply overrides
             # ----------------------------------------------------------
-            buy_price_now = forecasts["buy_price"][0]
+            amber_available, buy_price_now = self._check_amber_health()
+            if not amber_available and self._amber_unavailable_since:
+                minutes_down = (
+                    datetime.now() - self._amber_unavailable_since
+                ).total_seconds() / 60
+                if minutes_down > 5:
+                    LOGGER.warning(
+                        "Amber unavailable for %.0f min — defensive mode active "
+                        "(using $%.2f/kWh)",
+                        minutes_down,
+                        buy_price_now,
+                    )
+                    # Send notification if we haven't already for this outage
+                    if not self._api_health["amber"]["alerted"]:
+                        try:
+                            await self.hass.services.async_call(
+                                "persistent_notification",
+                                "create",
+                                {
+                                    "title": "MPC: Amber Pricing Unavailable",
+                                    "message": (
+                                        f"Amber API down for {minutes_down:.0f} min. "
+                                        "MPC operating in defensive mode."
+                                    ),
+                                    "notification_id": "mpc_amber_down",
+                                },
+                            )
+                            self._api_health["amber"]["alerted"] = True
+                        except Exception:
+                            pass
+
+            if amber_available:
+                buy_price_now = forecasts["buy_price"][0]
+
             sell_price_now = forecasts["sell_price"][0]
             is_spike = self._is_spike_active()
             override_reason: str | None = None
@@ -372,6 +414,57 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         }
 
     # ------------------------------------------------------------------
+    # Amber health / defensive discharge
+    # ------------------------------------------------------------------
+
+    def _check_amber_health(self) -> tuple[bool, float]:
+        """Check Amber API health and return (is_available, price_to_use).
+
+        When Amber unavailable >5min:
+        - Evening peak (17:00-21:00): assume spike risk → return $2.00
+        - Other times: hold conservatively → return $0.30
+
+        Returns:
+            Tuple of (is_available, effective_buy_price).
+        """
+        entities = self._get_entity_map()
+        amber_entity = entities.get("amber_price", "sensor.amber_general_price")
+        state = self.hass.states.get(amber_entity)
+
+        if state is None or state.state in ("unavailable", "unknown"):
+            # Amber is down
+            now = datetime.now()
+            if self._amber_unavailable_since is None:
+                self._amber_unavailable_since = now
+
+            minutes_down = (
+                now - self._amber_unavailable_since
+            ).total_seconds() / 60
+
+            if minutes_down < 5:
+                # Brief blip — use last known price
+                return (False, self._last_known_buy_price)
+
+            # Extended outage — defensive pricing based on time of day
+            hour = now.hour
+            if 17 <= hour < 21:
+                # Evening peak: assume spike risk
+                return (False, 2.00)
+            else:
+                # Off-peak: conservative hold
+                return (False, 0.30)
+
+        # Amber is available
+        self._amber_unavailable_since = None
+        self._api_health["amber"]["alerted"] = False
+        try:
+            price = float(state.state)
+            self._last_known_buy_price = price
+            return (True, price)
+        except (ValueError, TypeError):
+            return (True, self._last_known_buy_price)
+
+    # ------------------------------------------------------------------
     # Override helpers
     # ------------------------------------------------------------------
 
@@ -432,6 +525,59 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         LOGGER.debug("R2706: Rule 5 — block export, self-consume")
         return REGISTER_FEEDIN_BLOCK  # 0
+
+    # ------------------------------------------------------------------
+    # Modbus health
+    # ------------------------------------------------------------------
+
+    @property
+    def modbus_healthy(self) -> bool:
+        """Return True if Modbus communication is healthy."""
+        return self._modbus_consecutive_failures < 3
+
+    async def _modbus_write_success(self) -> None:
+        """Handle a successful Modbus write — reset failure tracking."""
+        if self._modbus_consecutive_failures > 2 and self._modbus_alerted:
+            try:
+                await self.hass.services.async_call(
+                    "persistent_notification",
+                    "create",
+                    {
+                        "title": "MPC: Modbus Communication Restored",
+                        "message": (
+                            "Victron Cerbo GX communication restored. "
+                            "Registers updating normally."
+                        ),
+                        "notification_id": "mpc_modbus_down",
+                    },
+                )
+            except Exception:
+                pass
+        self._modbus_consecutive_failures = 0
+        self._modbus_alerted = False
+        self._modbus_last_success = datetime.now()
+
+    async def _modbus_write_failure(self) -> None:
+        """Handle a failed Modbus write — increment counter, alert if needed."""
+        self._modbus_consecutive_failures += 1
+        if self._modbus_consecutive_failures >= 3 and not self._modbus_alerted:
+            try:
+                await self.hass.services.async_call(
+                    "persistent_notification",
+                    "create",
+                    {
+                        "title": "MPC: Modbus Communication Failed",
+                        "message": (
+                            f"Cannot write to Victron Cerbo GX. "
+                            f"{self._modbus_consecutive_failures} consecutive "
+                            f"failures. Registers are NOT being updated."
+                        ),
+                        "notification_id": "mpc_modbus_down",
+                    },
+                )
+                self._modbus_alerted = True
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Cell balancing
@@ -647,6 +793,8 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             },
             "solve_time_ms": round(result.solve_time_ms, 1),
             "spike_active": is_spike,
+            "modbus_healthy": self.modbus_healthy,
+            "modbus_failures": self._modbus_consecutive_failures,
         }
 
     # ------------------------------------------------------------------
@@ -678,8 +826,10 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             LOGGER.info("R2901 written: %d (was %s)", value, self._last_register_value)
             self._last_register_value = value
+            await self._modbus_write_success()
         except Exception:
             LOGGER.exception("Failed to write R2901=%d", value)
+            await self._modbus_write_failure()
 
     async def _write_feedin_register(self, value: int) -> None:
         """Write max grid feed-in register (R2706) via Modbus.
@@ -704,8 +854,10 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             LOGGER.info("R2706 written: %d (was %s)", value, self._last_feedin_value)
             self._last_feedin_value = value
+            await self._modbus_write_success()
         except Exception:
             LOGGER.exception("Failed to write R2706=%d", value)
+            await self._modbus_write_failure()
 
 
 # ======================================================================

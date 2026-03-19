@@ -284,6 +284,8 @@ class ForecastBuilder:
         self.dt_hours = tunables.dt_hours
         # Cached cloud layers from _classify_day_type for reuse in _get_cloud_derate_factors
         self._cloud_layers_cache: dict[int, dict[str, float]] | None = None
+        # HA recorder history cache: {entity_id: (timestamp, results)}
+        self._history_cache: dict[str, tuple[float, list[dict]]] = {}
 
     # ------------------------------------------------------------------
     # HA state helpers (replacing HAClient methods)
@@ -319,6 +321,141 @@ class ForecastBuilder:
         if state is None:
             return default
         return state.attributes.get(attr, default)
+
+    # ------------------------------------------------------------------
+    # HA recorder history queries
+    # ------------------------------------------------------------------
+
+    async def _get_ha_history(
+        self, entity_id: str, hours: int = 168,
+    ) -> list[dict]:
+        """Query HA recorder for entity history.
+
+        Returns list of {last_changed, state} dicts. Results are cached
+        for 1 hour to avoid hammering the database. Limited to 1000
+        entries to protect Pi memory.
+
+        Args:
+            entity_id: The entity to query history for.
+            hours: How many hours of history to fetch (default 168 = 7 days).
+
+        Returns:
+            List of state-change dicts, or empty list if recorder unavailable.
+        """
+        import time as _time
+
+        # Check cache (1-hour TTL)
+        cache_key = entity_id
+        now_ts = _time.monotonic()
+        if cache_key in self._history_cache:
+            cached_ts, cached_data = self._history_cache[cache_key]
+            if now_ts - cached_ts < 3600:  # 1 hour
+                return cached_data
+
+        try:
+            from homeassistant.components.recorder import get_instance
+            from homeassistant.components.recorder.history import (
+                state_changes_during_period,
+            )
+        except ImportError:
+            _LOGGER.debug(
+                "Recorder not available — HA history fallback disabled"
+            )
+            return []
+
+        start = datetime.now(timezone.utc) - timedelta(hours=hours)
+        end = datetime.now(timezone.utc)
+
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                instance = get_instance(self._hass)
+                history_data = await instance.async_add_executor_job(
+                    state_changes_during_period,
+                    self._hass,
+                    start,
+                    end,
+                    entity_id,
+                )
+
+                # history_data is {entity_id: [State, ...]} or empty
+                states = history_data.get(entity_id, [])
+
+                # Convert State objects to dicts, limit to 1000
+                results: list[dict] = []
+                for state_obj in states[-1000:]:
+                    results.append({
+                        "last_changed": state_obj.last_changed.isoformat(),
+                        "state": state_obj.state,
+                    })
+
+                self._history_cache[cache_key] = (now_ts, results)
+                return results
+
+            except Exception as exc:
+                # Retry on database lock (sqlite3.OperationalError)
+                is_db_lock = "database is locked" in str(exc).lower()
+                if is_db_lock and attempt < max_retries - 1:
+                    import asyncio
+                    wait = 0.5 * (2 ** attempt)  # 0.5s, 1s, 2s
+                    _LOGGER.warning(
+                        "Recorder DB locked (attempt %d/%d), retrying in %.1fs",
+                        attempt + 1, max_retries, wait,
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+
+                _LOGGER.warning(
+                    "Failed to query HA history for %s: %s", entity_id, exc,
+                )
+                return []
+
+        return []  # pragma: no cover — all retries exhausted
+
+    def _build_solar_profile_from_history(
+        self, history: list[dict], now: datetime,
+    ) -> list[float] | None:
+        """Build hourly solar kW profile from HA recorder history.
+
+        Groups history entries by hour-of-day, computes average kW per
+        hour from the last N days (configured via tunables.history_days).
+
+        Args:
+            history: List of {last_changed, state} dicts (watts).
+            now: Current datetime for hour reordering.
+
+        Returns:
+            24-element hourly profile [kw_h0, ..., kw_h23] reordered
+            starting from current hour, or None if insufficient data.
+        """
+        if len(history) < 48:
+            return None
+
+        return _build_hourly_profile_from_history(
+            history, now, self._tunables.history_days,
+        )
+
+    def _build_load_profile_from_history(
+        self, history: list[dict], now: datetime,
+    ) -> list[float] | None:
+        """Build hourly load kW profile from HA recorder history.
+
+        Same pattern as solar but for the AC consumption entity.
+
+        Args:
+            history: List of {last_changed, state} dicts (watts).
+            now: Current datetime for hour reordering.
+
+        Returns:
+            24-element hourly profile reordered starting from current
+            hour, or None if insufficient data.
+        """
+        if len(history) < 48:
+            return None
+
+        return _build_hourly_profile_from_history(
+            history, now, self._tunables.history_days,
+        )
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -926,12 +1063,28 @@ class ForecastBuilder:
                     )
 
         # Priority 3: HA sensor history + VRM daily scaling
-        # TODO: HA recorder queries require async recorder API access
-        # (homeassistant.components.recorder.get_instance().async_add_executor_job)
-        # which is complex. For now, skip to priority 4. To implement:
-        #   from homeassistant.components.recorder import get_instance
-        #   instance = get_instance(self._hass)
-        #   history = await instance.async_add_executor_job(...)
+        if solar_kw is None:
+            solar_entity = self._entities.get(
+                "solar_power", "sensor.solar_power",
+            )
+            history = await self._get_ha_history(
+                solar_entity,
+                hours=self._tunables.history_days * 24,
+            )
+            if history:
+                profile_kw = self._build_solar_profile_from_history(
+                    history, now,
+                )
+                if profile_kw is not None:
+                    # Apply VRM daily scaling if available
+                    scale = self._get_vrm_daily_scale(profile_kw)
+                    profile_kw = [p * scale for p in profile_kw]
+                    solar_kw = _expand_hourly_to_5min(profile_kw, self.N)
+                    source = "ha_history"
+                    _LOGGER.info(
+                        "Solar forecast: HA history x daily scale (%.2f)",
+                        scale,
+                    )
 
         # Priority 4: Synthetic bell curve
         if solar_kw is None:
@@ -1364,9 +1517,25 @@ class ForecastBuilder:
                 source = "vrm_hourly"
 
         # Priority 2: HA history
-        # TODO: HA recorder queries require async recorder API access
-        # (homeassistant.components.recorder.get_instance().async_add_executor_job)
-        # which is complex. For now, skip to priority 3.
+        if load_kw is None:
+            load_entity = self._entities.get(
+                "ac_consumption", "sensor.victron_ac_consumption",
+            )
+            history = await self._get_ha_history(
+                load_entity,
+                hours=self._tunables.history_days * 24,
+            )
+            if history:
+                profile_kw = self._build_load_profile_from_history(
+                    history, now,
+                )
+                if profile_kw is not None:
+                    load_kw = _expand_hourly_to_5min(profile_kw, self.N)
+                    source = "ha_history"
+                    _LOGGER.info(
+                        "Load forecast: HA history (%d entries)",
+                        len(history),
+                    )
 
         # Priority 3: Typical residential profile
         if load_kw is None:
