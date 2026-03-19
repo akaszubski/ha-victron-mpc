@@ -169,6 +169,7 @@ See [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md) for the full technical explanat
 |----------|-------------|
 | [docs/SETUP.md](docs/SETUP.md) | Prerequisites, config flow walkthrough, post-setup verification |
 | [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md) | LP optimizer, solar forecast chain, override logic, register mapping |
+| [docs/PARAMETERS.md](docs/PARAMETERS.md) | Definitive reference for every configurable field (52 parameters with defaults, ranges, effects) |
 | [docs/TUNING.md](docs/TUNING.md) | Tunable parameters, common scenarios, recommended adjustments |
 | [docs/ENTITIES.md](docs/ENTITIES.md) | Complete entity reference with attributes and example Lovelace cards |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common issues, debug logging, diagnostics, rollback |
