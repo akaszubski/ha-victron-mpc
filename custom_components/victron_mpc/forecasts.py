@@ -1028,6 +1028,73 @@ class ForecastBuilder:
         )
         return derated, coefficient
 
+    async def _apply_hourly_shading_mask(
+        self, solar_kw: list[float], now: datetime,
+    ) -> list[float]:
+        """Apply VRM P90 hourly production ceiling to cap shaded hours.
+
+        The coefficient handles the daily total (Solcast × 0.65 = correct kWh).
+        This method handles the hourly SHAPE — capping each hour at what VRM
+        shows the site can physically produce at that hour in this month.
+
+        Shaded morning hours (VRM P90 < 0.2 kW) get zeroed out.
+        Partially shaded hours get capped at the VRM P90 value.
+        Unshaded hours pass through unchanged (coefficient already handled total).
+
+        This is derived from real production data, not hardcoded. VRM P90
+        captures the exact shading pattern for each hour, month, and season.
+        """
+        if not self._vrm or not self._vrm.available:
+            return solar_kw
+
+        envelope = await self._vrm.get_clearsky_envelope(percentile=0.90)
+        if not envelope:
+            return solar_kw
+
+        month = now.month
+        hourly_ceiling = envelope.get(month)
+        if not hourly_ceiling:
+            for offset in [1, -1, 2, -2]:
+                m = ((month - 1 + offset) % 12) + 1
+                hourly_ceiling = envelope.get(m)
+                if hourly_ceiling:
+                    break
+
+        if not hourly_ceiling or sum(hourly_ceiling) <= 0:
+            return solar_kw
+
+        # Reorder ceiling to start from current hour
+        current_hour = now.hour
+        ceiling = hourly_ceiling[current_hour:] + hourly_ceiling[:current_hour]
+
+        # Apply per-hour cap
+        steps_per_hour = self._tunables.steps_per_hour
+        masked = []
+        zeroed_hours = 0
+
+        for i, kw in enumerate(solar_kw):
+            hour_idx = min(i // steps_per_hour, len(ceiling) - 1)
+            vrm_max = ceiling[hour_idx]
+            if vrm_max < 0.2:
+                # Fully shaded hour — zero regardless of Solcast
+                masked.append(0.0)
+                if kw > 0.01:
+                    zeroed_hours += 1
+            else:
+                # Cap at VRM P90 for this hour
+                masked.append(min(kw, vrm_max))
+
+        if zeroed_hours > 0:
+            before = sum(solar_kw) * self.dt_hours
+            after = sum(masked) * self.dt_hours
+            _LOGGER.info(
+                "Hourly shading mask: %.1fkWh → %.1fkWh "
+                "(%d shaded hours zeroed, month=%d)",
+                before, after, zeroed_hours, month,
+            )
+
+        return masked
+
     async def _build_solar_forecast(
         self, now: datetime, current_solar_w: float,
     ) -> tuple[list[float], str, str]:
@@ -1063,6 +1130,13 @@ class ForecastBuilder:
             solcast_forecast = self._get_solcast_ha_forecast(now)
             if solcast_forecast is not None:
                 solcast_forecast, coefficient = await self._derate_solcast_with_vrm(
+                    solcast_forecast, now,
+                )
+                # Zero out hours where VRM shows site is fully shaded.
+                # VRM P90 < 0.2 kW means even the best day produced nothing
+                # at that hour — trees/buildings block all solar regardless
+                # of weather. Solcast doesn't know this.
+                solcast_forecast = await self._apply_hourly_shading_mask(
                     solcast_forecast, now,
                 )
                 solar_kw = solcast_forecast
