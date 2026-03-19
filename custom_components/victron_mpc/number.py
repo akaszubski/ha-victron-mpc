@@ -92,6 +92,51 @@ NUMBER_DESCRIPTIONS: tuple[VictronMPCNumberDescription, ...] = (
         mode=NumberMode.SLIDER,
         icon="mdi:trending-up",
     ),
+    # Safety & override thresholds
+    VictronMPCNumberDescription(
+        key="mpc_spike_threshold",
+        option_key="spike_threshold",
+        translation_key="spike_threshold",
+        native_min_value=0.50,
+        native_max_value=5.00,
+        native_step=0.10,
+        native_unit_of_measurement="$/kWh",
+        mode=NumberMode.BOX,
+        icon="mdi:flash-alert",
+    ),
+    VictronMPCNumberDescription(
+        key="mpc_defensive_price",
+        option_key="defensive_price",
+        translation_key="defensive_price",
+        native_min_value=0.50,
+        native_max_value=5.00,
+        native_step=0.10,
+        native_unit_of_measurement="$/kWh",
+        mode=NumberMode.BOX,
+        icon="mdi:shield-alert",
+    ),
+    VictronMPCNumberDescription(
+        key="mpc_amber_blip_minutes",
+        option_key="amber_blip_minutes",
+        translation_key="amber_blip_minutes",
+        native_min_value=1,
+        native_max_value=15,
+        native_step=1,
+        native_unit_of_measurement="min",
+        mode=NumberMode.SLIDER,
+        icon="mdi:timer-sand",
+    ),
+    VictronMPCNumberDescription(
+        key="mpc_feedin_export_threshold",
+        option_key="feedin_export_threshold",
+        translation_key="feedin_export_threshold",
+        native_min_value=0.01,
+        native_max_value=0.50,
+        native_step=0.01,
+        native_unit_of_measurement="$/kWh",
+        mode=NumberMode.BOX,
+        icon="mdi:transmission-tower-export",
+    ),
 )
 
 # Defaults matching the working MPCTunables from config.py
@@ -102,6 +147,10 @@ _DEFAULTS: dict[str, float] = {
     "soc_floor_pct": 20,
     "overnight_min_soc_pct": 30,
     "load_inflation_pct": 10,
+    "spike_threshold": 1.00,
+    "defensive_price": 2.00,
+    "amber_blip_minutes": 5,
+    "feedin_export_threshold": 0.10,
 }
 
 

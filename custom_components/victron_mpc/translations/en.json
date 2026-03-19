@@ -101,7 +101,11 @@
       "overnight_hold_reward": { "name": "Overnight Hold Reward" },
       "soc_floor": { "name": "SoC Floor" },
       "overnight_min_soc": { "name": "Overnight Min SoC" },
-      "load_inflation": { "name": "Load Inflation" }
+      "load_inflation": { "name": "Load Inflation" },
+      "spike_threshold": { "name": "Spike Threshold" },
+      "defensive_price": { "name": "Defensive Price (Amber Down)" },
+      "amber_blip_minutes": { "name": "Amber Blip Tolerance" },
+      "feedin_export_threshold": { "name": "Feed-in Export Threshold" }
     },
     "switch": {
       "shadow_mode": { "name": "Shadow Mode" }

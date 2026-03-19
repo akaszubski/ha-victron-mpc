@@ -92,6 +92,16 @@ class MPCTunables:
     # Overnight minimum SoC — hard constraint during overnight hours
     overnight_min_soc_pct: float = 30.0
 
+    # Safety & override thresholds
+    spike_threshold: float = 1.00  # $/kWh — force discharge above this
+    defensive_price: float = 2.00  # $/kWh — assumed price when Amber down
+    fallback_price: float = 0.30  # $/kWh — used when no price data at all
+    amber_blip_minutes: float = 5.0  # Minutes before defensive mode
+    feedin_export_threshold: float = 0.10  # $/kWh — min FIT for spike export
+    feedin_soc_threshold: float = 30.0  # % — min SoC to allow spike export
+    overnight_price_low: float = 0.15  # $/kWh — full hold reward below
+    overnight_price_high: float = 0.25  # $/kWh — zero hold reward above
+
     # Forecast horizon
     forecast_hours: int = 24
     dt_minutes: int = 5  # Optimization timestep

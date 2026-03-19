@@ -12,21 +12,29 @@ log = logging.getLogger(__name__)
 
 
 def scale_overnight_hold_reward(
-    base_reward: float, buy_prices: list[float], overnight_steps: list[int],
+    base_reward: float,
+    buy_prices: list[float],
+    overnight_steps: list[int],
+    price_low: float = 0.15,
+    price_high: float = 0.25,
 ) -> float:
     """Scale overnight hold reward based on average overnight price.
 
-    When grid is cheap (<$0.15), full hold reward — preserve battery for
-    morning spikes. When grid is moderate/expensive ($0.30+), scale to
+    When grid is cheap (<price_low), full hold reward — preserve battery for
+    morning spikes. When grid is moderate/expensive (>price_high), scale to
     zero — discharging is clearly more profitable than holding.
 
     Linear interpolation between price_low and price_high thresholds.
+
+    Args:
+        base_reward: Base overnight hold reward ($/kWh).
+        buy_prices: Full price forecast array.
+        overnight_steps: Step indices that fall within overnight hours.
+        price_low: Full reward below this price (default $0.15).
+        price_high: Zero reward above this price (default $0.25).
     """
     if not overnight_steps or base_reward <= 0:
         return base_reward
-
-    price_low = 0.15   # Full reward below this
-    price_high = 0.25  # Zero reward above this
 
     overnight_prices = [buy_prices[i] for i in overnight_steps if i < len(buy_prices)]
     if not overnight_prices:

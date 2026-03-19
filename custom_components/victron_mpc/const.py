@@ -66,3 +66,14 @@ DEFAULT_INVERTER_MAX_KW = 5.0
 DEFAULT_SOC_MIN_PCT = 10.0
 DEFAULT_CHARGE_EFFICIENCY = 0.95
 DEFAULT_DISCHARGE_EFFICIENCY = 0.95
+
+# Safety & override defaults (all configurable via options flow)
+DEFAULT_SPIKE_THRESHOLD = 1.00  # $/kWh — force discharge above this
+DEFAULT_DEFENSIVE_PRICE = 2.00  # $/kWh — assumed price when Amber down
+DEFAULT_FALLBACK_PRICE = 0.30  # $/kWh — used when no price data at all
+DEFAULT_AMBER_BLIP_MINUTES = 5  # Minutes before defensive mode activates
+DEFAULT_FEEDIN_EXPORT_THRESHOLD = 0.10  # $/kWh — min FIT for spike export
+DEFAULT_FEEDIN_SOC_THRESHOLD = 30  # % — min SoC to allow spike export
+DEFAULT_MODBUS_FAILURE_THRESHOLD = 3  # Consecutive failures before alerting
+DEFAULT_OVERNIGHT_PRICE_LOW = 0.15  # $/kWh — full hold reward below this
+DEFAULT_OVERNIGHT_PRICE_HIGH = 0.25  # $/kWh — zero hold reward above this

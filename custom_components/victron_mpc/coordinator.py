@@ -93,7 +93,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Amber defensive discharge state
         self._amber_unavailable_since: datetime | None = None
-        self._last_known_buy_price: float = 0.30
+        self._last_known_buy_price: float = 0.30  # Updated from tunables each cycle
 
     async def _async_setup(self) -> None:
         """One-time setup called during first refresh (HA 2024.8+).
@@ -145,6 +145,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Phase 1: Build tunables and system config from entry
             # ----------------------------------------------------------
             tunables = MPCTunables.from_config_entry(self.entry.options)
+            self._tunables = tunables  # Make accessible to helper methods
             system = VictronSystem.from_config_entry(self.entry.data)
 
             # Update diesel price for genset cost calculation
@@ -208,6 +209,8 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 tunables.overnight_hold_reward,
                 forecasts["buy_price"],
                 overnight_steps,
+                price_low=tunables.overnight_price_low,
+                price_high=tunables.overnight_price_high,
             )
 
             opt_input = OptInput(
@@ -264,7 +267,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 minutes_down = (
                     datetime.now() - self._amber_unavailable_since
                 ).total_seconds() / 60
-                if minutes_down > 5:
+                if minutes_down > tunables.amber_blip_minutes:
                     LOGGER.warning(
                         "Amber unavailable for %.0f min — defensive mode active "
                         "(using $%.2f/kWh)",
@@ -304,7 +307,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 override_reason = (
                     f"Negative pricing (${buy_price_now:.3f}/kWh) — charging"
                 )
-            elif is_spike or buy_price_now > 1.0:
+            elif is_spike or buy_price_now > tunables.spike_threshold:
                 # Spike — discharge to minimise grid usage
                 target_register = 100
                 mode = "discharge"
@@ -445,7 +448,11 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 now - self._amber_unavailable_since
             ).total_seconds() / 60
 
-            if minutes_down < 5:
+            blip_min = getattr(self, "_tunables", None)
+            blip_threshold = blip_min.amber_blip_minutes if blip_min else 5.0
+            defensive_price = blip_min.defensive_price if blip_min else 2.00
+
+            if minutes_down < blip_threshold:
                 # Brief blip — use last known price
                 return (False, self._last_known_buy_price)
 
@@ -453,7 +460,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # At $20/kWh, even 30 min on grid at 1kW = $10 loss.
             # Battery wear from defensive discharge = $0.05/kWh = negligible.
             # Asymmetric risk: always better to discharge than risk a spike.
-            return (False, 2.00)
+            return (False, defensive_price)
 
         # Amber is available
         self._amber_unavailable_since = None
@@ -512,7 +519,11 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             LOGGER.debug("R2706: Rule 2 — grid_charge mode, allow import")
             return REGISTER_MAX_FEED_IN  # 70
 
-        if is_spike and sell_price > 0.10 and soc_pct > 30:
+        tunables = getattr(self, "_tunables", None)
+        fit_threshold = tunables.feedin_export_threshold if tunables else 0.10
+        soc_threshold = tunables.feedin_soc_threshold if tunables else 30.0
+
+        if is_spike and sell_price > fit_threshold and soc_pct > soc_threshold:
             LOGGER.debug(
                 "R2706: Rule 3 — spike + FIT $%.2f + SoC %.0f%%, export for profit",
                 sell_price,
@@ -534,7 +545,11 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     @property
     def modbus_healthy(self) -> bool:
         """Return True if Modbus communication is healthy."""
-        return self._modbus_consecutive_failures < 3
+        threshold = 3
+        tunables = getattr(self, "_tunables", None)
+        if tunables and hasattr(tunables, "modbus_failure_threshold"):
+            threshold = int(tunables.modbus_failure_threshold) if hasattr(tunables, "modbus_failure_threshold") else 3
+        return self._modbus_consecutive_failures < threshold
 
     async def _modbus_write_success(self) -> None:
         """Handle a successful Modbus write — reset failure tracking."""
