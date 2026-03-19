@@ -1223,17 +1223,15 @@ class TestSolcastIntegration:
         result = fb._get_solcast_ha_forecast(now)
         assert result is None
 
-    async def test_solcast_shaped_by_vrm_envelope(
+    async def test_solcast_derated_by_vrm_coefficient(
         self, hass: HomeAssistant, tunables: MPCTunables,
     ):
-        """Solcast per-hour capped by VRM P90 shading envelope.
+        """Solcast derated by VRM shading coefficient.
 
-        Real scenario: Solcast says 7kW at noon but VRM P90 shows
-        this site never exceeds 4kW at noon (due to shading).
-        Each hour is independently capped.
+        VRM best March day = 22 kWh, Solcast raw = 50.7 kWh
+        Coefficient = 22/50.7 = 0.43. All hours scaled uniformly.
         """
         now = datetime(2026, 3, 18, 10, 0, tzinfo=timezone(timedelta(hours=11)))
-        # Solcast forecasts 7kW peak (no shading knowledge)
         forecast_data = _make_solcast_detailed_forecast(now, peak_kw=7.0)
         hass.states.async_set(
             "sensor.solcast_pv_forecast_forecast_today",
@@ -1241,65 +1239,59 @@ class TestSolcastIntegration:
             {"detailedForecast": forecast_data},
         )
 
-        # VRM P90 envelope shows shading limits per hour
-        # Peak is only 4kW (shading cuts 3kW off Solcast's 7kW)
-        vrm_envelope = [0]*6 + [0.5, 1.5, 2.5, 3.5, 4.0, 4.0,
-                         4.0, 3.5, 2.5, 1.5, 0.5, 0] + [0]*6
         vrm = MagicMock()
         vrm.available = True
-        vrm.get_clearsky_envelope = AsyncMock(return_value={3: vrm_envelope})
+        vrm.get_monthly_peak_kwh = AsyncMock(return_value={3: 22.0})
 
         fb = _builder(hass, tunables, vrm=vrm, entities=SOLCAST_ENTITIES)
         raw = fb._get_solcast_ha_forecast(now)
         assert raw is not None
 
-        capped, scale = await fb._cap_solcast_with_vrm(raw, now)
+        derated, coefficient = await fb._derate_solcast_with_vrm(raw, now)
 
-        # No 5-min step should exceed its hour's VRM P90 ceiling
-        steps_per_hour = tunables.steps_per_hour
-        current_hour = now.hour
-        ceiling = vrm_envelope[current_hour:] + vrm_envelope[:current_hour]
-        for i, kw in enumerate(capped):
-            hour_idx = min(i // steps_per_hour, len(ceiling) - 1)
-            assert kw <= ceiling[hour_idx] + 0.01, (
-                f"Step {i} (hour {hour_idx}): {kw:.2f}kW exceeds "
-                f"VRM ceiling {ceiling[hour_idx]:.2f}kW"
-            )
+        # Coefficient should be < 1.0 (Solcast was reduced)
+        assert coefficient < 1.0
+        # Total should be near VRM peak
+        derated_total = sum(derated) * tunables.dt_hours
+        assert derated_total < 25.0  # Below VRM peak + tolerance
+        # Shape preserved — relative proportions same
+        raw_peak = max(raw)
+        derated_peak = max(derated)
+        assert abs(derated_peak / raw_peak - coefficient) < 0.05
 
-        # Scale should be < 1.0 (Solcast was reduced)
-        assert scale < 1.0
-
-    async def test_solcast_not_capped_when_below_envelope(
+    async def test_solcast_cloudy_day_no_derate_needed(
         self, hass: HomeAssistant, tunables: MPCTunables,
     ):
-        """Solcast forecast below VRM P90 at every hour → no shaping."""
+        """On a cloudy day, Solcast is already below VRM peak — no derate.
+
+        Solcast says 14.5 kWh (cloudy). VRM peak = 22 kWh.
+        Coefficient = 22/14.5 = 1.51 → capped to 1.0.
+        Solcast's cloud-aware forecast is already realistic.
+        """
         now = datetime(2026, 3, 18, 10, 0, tzinfo=timezone(timedelta(hours=11)))
-        # Solcast forecasts modest 2kW peak (cloudy day)
         forecast_data = _make_solcast_detailed_forecast(now, peak_kw=2.0)
         hass.states.async_set(
             "sensor.solcast_pv_forecast_forecast_today",
-            "10.0",
+            "14.0",
             {"detailedForecast": forecast_data},
         )
 
-        # VRM P90 ceiling generously high — 2kW Solcast won't be clipped
-        vrm_envelope = [0]*5 + [2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 7.0,
-                         7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 0] + [0]*5
         vrm = MagicMock()
         vrm.available = True
-        vrm.get_clearsky_envelope = AsyncMock(return_value={3: vrm_envelope})
+        vrm.get_monthly_peak_kwh = AsyncMock(return_value={3: 22.0})
 
         fb = _builder(hass, tunables, vrm=vrm, entities=SOLCAST_ENTITIES)
         raw = fb._get_solcast_ha_forecast(now)
-        capped, scale = await fb._cap_solcast_with_vrm(raw, now)
+        derated, coefficient = await fb._derate_solcast_with_vrm(raw, now)
 
-        # Scale should be ~1.0 (no capping needed)
-        assert scale > 0.99
+        # Cloudy day: Solcast < VRM peak → coefficient = 1.0 (no derate)
+        assert coefficient == 1.0
+        assert derated == raw  # Unchanged
 
-    async def test_solcast_cap_no_vrm_available(
+    async def test_solcast_derate_no_vrm_available(
         self, hass: HomeAssistant, tunables: MPCTunables,
     ):
-        """No VRM configured → Solcast used unshaped."""
+        """No VRM configured → Solcast used underated (with warning)."""
         now = datetime(2026, 3, 18, 10, 0, tzinfo=timezone(timedelta(hours=11)))
         forecast_data = _make_solcast_detailed_forecast(now, peak_kw=7.0)
         hass.states.async_set(
@@ -1310,9 +1302,9 @@ class TestSolcastIntegration:
 
         fb = _builder(hass, tunables, entities=SOLCAST_ENTITIES)  # No VRM
         raw = fb._get_solcast_ha_forecast(now)
-        capped, scale = await fb._cap_solcast_with_vrm(raw, now)
+        derated, coefficient = await fb._derate_solcast_with_vrm(raw, now)
 
-        assert scale == 1.0  # No VRM → no shaping
+        assert coefficient == 1.0  # No VRM → no derate
 
 
 # ===================================================================
