@@ -43,6 +43,8 @@ Solcast provides the most accurate solar forecasts by using satellite imagery ca
 
 After setup, verify the entity `sensor.solcast_pv_forecast_forecast_today` exists and has a `detailedForecast` attribute with 30-minute power values.
 
+**Note on shading**: Solcast's satellite imagery cannot see ground-level obstructions (trees, nearby buildings). For sites with significant shading, Solcast can over-forecast by approximately 2x. The MPC integration compensates for this by always applying a VRM P90 per-hour per-month envelope cap to Solcast forecasts. This requires VRM API access to be configured for best accuracy.
+
 ### Select in MPC Config Flow
 
 In the MPC config flow **Step 4** (Victron Sensors), an optional **Solcast Forecast Entity** picker appears. Select `sensor.solcast_pv_forecast_forecast_today` if available. If left empty, MPC will still auto-detect the entity by its default name.
@@ -169,7 +171,7 @@ If the state is `unknown` or `unavailable`, check the HA logs (Settings > System
 Verify that the **Shadow Mode** switch is ON (the default). This means the integration is computing decisions but NOT writing Modbus registers. You should see log messages like:
 
 ```
-SHADOW: Would write R2901=450, R2706=0
+SHADOW: Would write R2901=200, R2706=0
 ```
 
 ### 4. Decision sensor has context
@@ -197,3 +199,30 @@ This lets you:
 **To go live**: Turn off the Shadow Mode switch when you are satisfied with the decisions. The integration will immediately begin writing R2901 and R2706 registers to your Cerbo GX.
 
 **To return to shadow mode**: Turn the switch back on at any time. The integration will stop writing registers but continue computing decisions.
+
+---
+
+## Deployment Safety Rules
+
+### HA Restart Vulnerability
+
+During an HA restart, there is a brief window where no integration is writing registers. The registers retain their last written values. If the last value was a high grid_charge register (e.g., R2901=800), the ESS will continue grid-charging through the restart.
+
+**Before restarting HA**, write a safe floor value:
+
+```yaml
+service: modbus.write_register
+data:
+  hub: victron
+  unit: 100
+  address: 2901
+  value: 200   # 20% floor - safe default
+```
+
+### YAML Automation Re-Enable on Restart
+
+If you previously used Mac-based MPC with YAML automations (`automation.mpc_*`), those automations will re-enable themselves on every HA restart **unless** they have `initial_state: false` in the YAML source. All 12 MPC YAML automations should have `initial_state: false` added to prevent them from conflicting with the HACS integration after a restart.
+
+### Grid Import Monitoring
+
+After any deployment or restart, always cross-check optimizer decisions against `sensor.victron_grid_import`. If grid import exceeds 200W during a solar_charge or hold mode, the register value is likely at or above the current SoC and needs correction.

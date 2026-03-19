@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-03-19
+
+### Fixed
+
+- **CRITICAL: Register 2901 behavior corrected** (#31): For solar_charge, hold, and discharge modes, the register is now always set BELOW the current SoC (to the configured SoC floor, e.g., 200 = 20%). Previously, the register could be set at or near the current SoC, which caused the Victron ESS to charge from grid (interpreting register >= SoC as a grid charge command). Only grid_charge mode now sets the register ABOVE current SoC. This is the single most important correctness fix in the integration.
+- **Grid import auto-correction**: The coordinator now monitors `sensor.victron_grid_import` after register writes. If grid import exceeds 200W during a non-grid-charge mode, the integration auto-corrects the register to the SoC floor value and logs a warning.
+- **Documentation audit**: All documentation updated to reflect correct register behavior. Previous docs incorrectly described register as "target SoC" for all modes.
+
+### Changed
+
+- **Solcast VRM P90 envelope enforcement**: Solcast forecasts are now always capped per-hour by the VRM P90 historical envelope grouped by month. Solcast over-forecasts approximately 2x for sites with shading; the VRM envelope corrects this. A warning is logged if VRM data is unavailable for the cap.
+- **Mac runner stopped**: The `com.homeassistant.mpc` launchd service has been unloaded. All 12 YAML automations (`automation.mpc_*`) now have `initial_state: false` in their YAML to prevent re-enabling on HA restart. The HACS integration is the sole controller of registers.
+
 ## [0.4.0] - 2026-03-19
 
 ### Added
@@ -54,6 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Diagnostics**: Downloadable diagnostics dump with redacted credentials
 - **Documentation**: Setup guide, technical deep-dive, tuning guide, troubleshooting, full entity reference with example Lovelace cards
 
+[0.4.1]: https://github.com/akaszubski/ha-victron-mpc/releases/tag/v0.4.1
 [0.4.0]: https://github.com/akaszubski/ha-victron-mpc/releases/tag/v0.4.0
 [0.3.0]: https://github.com/akaszubski/ha-victron-mpc/releases/tag/v0.3.0
 [0.2.0]: https://github.com/akaszubski/ha-victron-mpc/releases/tag/v0.2.0

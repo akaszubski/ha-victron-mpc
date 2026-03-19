@@ -80,6 +80,7 @@ If Shadow Mode is ON, the integration is not writing registers. Check:
 Verify what was actually written:
 - Battery Plan sensor's `target_register` attribute shows what the integration wants
 - Check the Modbus register readback sensor (if configured) for what the inverter actually has
+- **Critical**: For solar_charge/hold/discharge modes, `target_register` should be BELOW the current SoC (it represents the floor). For grid_charge, it should be ABOVE the current SoC. If the register is at or above current SoC during a non-grid-charge mode, the ESS will charge from grid -- see "Grid Import During Solar Charge" section above
 
 ### 3. Check Override Active
 
@@ -90,6 +91,58 @@ Check the Decision sensor's `override_applied` and `override_reason` attributes.
 ### 4. Check ESS Assistant
 
 The Victron ESS Assistant must be installed and configured. Without it, register writes have no effect. Verify in VRM > Device List > Inverter > Settings.
+
+---
+
+## Grid Import During Solar Charge
+
+### Symptoms
+- Mode shows `solar_charge` or `hold` but `sensor.victron_grid_import` shows >200W
+- Battery charging from grid when it should only be charging from solar
+- Unexpected grid consumption during sunny periods
+
+### Root Cause
+
+**Register 2901 is set at or above the current SoC.** This is the most common and most costly bug in MPC battery management.
+
+When R2901 >= current SoC, the Victron ESS interprets this as "charge the battery from grid up to this level." For solar_charge, hold, and discharge modes, the register MUST be set BELOW the current SoC. The register represents the discharge floor (how low the battery is allowed to go), NOT the target SoC.
+
+**Example of the bug:**
+- SoC = 45%, mode = solar_charge
+- Register set to 450 (45%) -- WRONG, this equals current SoC
+- ESS sees "maintain 45%" and pulls from grid to ensure it
+- Should be: Register = 200 (20% floor), solar charges naturally
+
+### How the Integration Handles This
+
+The integration monitors `sensor.victron_grid_import` after each register write. If grid import exceeds 200W during a non-grid-charge mode, the integration:
+
+1. Logs a warning: "Grid importing during solar_charge -- auto-correcting"
+2. Immediately writes the SoC floor register (e.g., R2901=200 for 20% floor)
+3. Reports the auto-correction in the Decision sensor's `override_reason` attribute
+
+### Manual Fix
+
+If you see unexpected grid import:
+
+1. Check the Battery Plan sensor's `target_register` attribute
+2. Compare with `battery_soc_pct` -- register should be BELOW SoC for non-grid-charge modes
+3. If register >= SoC, write the floor manually:
+   ```yaml
+   service: modbus.write_register
+   data:
+     hub: victron
+     unit: 100
+     address: 2901
+     value: 200   # 20% floor
+   ```
+
+### Prevention
+
+- The integration enforces: for solar_charge/hold/discharge, register = configured SoC floor (default 200 = 20%)
+- Only grid_charge mode sets the register above current SoC
+- Always cross-check optimizer decisions against `sensor.victron_grid_import`
+- Never trust mode labels without verifying actual hardware readings
 
 ---
 

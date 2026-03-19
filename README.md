@@ -24,7 +24,7 @@ Typical savings are 20-40% on electricity costs compared to a fixed SoC strategy
 - **LP-optimized dispatch** -- 288-step (5-min) rolling horizon via scipy HiGHS solver (~50ms per solve)
 - **Amber Electric integration** -- wholesale buy/sell pricing, 30h forecast, spike detection
 - **Direct Modbus writes** -- R2901 (ESS min SoC) and R2706 (max grid feed-in) via Victron Cerbo GX
-- **Solcast solar forecast** -- auto-detects [ha-solcast-solar](https://github.com/BJReplay/ha-solcast-solar) for satellite-based rooftop forecasts (optional, highest priority)
+- **Solcast solar forecast** -- auto-detects [ha-solcast-solar](https://github.com/BJReplay/ha-solcast-solar) for satellite-based rooftop forecasts (optional, highest priority), always capped by VRM P90 per-hour shading envelope
 - **Weather-classified solar forecast** -- VRM historical percentiles (P90/P70/P40/P15) selected by day type
 - **Cloud layer derating** -- Open-Meteo low/mid/high altitude cloud weighting for accurate solar adjustment
 - **Override safety** -- automatic spike discharge, negative pricing charge, stale data fallback
@@ -94,7 +94,7 @@ All entities are grouped under a single **Victron MPC Battery Optimizer** device
 
 | Entity | Name | Unit | Description |
 |--------|------|------|-------------|
-| `sensor.victron_mpc_battery_optimizer_battery_plan` | Battery Plan | % | Target SoC with mode, reason, register values, SoC trajectory |
+| `sensor.victron_mpc_battery_optimizer_battery_plan` | Battery Plan | % | SoC floor/target with mode, reason, register values, SoC trajectory |
 | `sensor.victron_mpc_battery_optimizer_decision` | Decision | -- | Current mode with full context: prices, weather, forecast source, overrides |
 | `sensor.victron_mpc_battery_optimizer_effective_price` | Effective Price | $/kWh | Weighted price the optimizer used for its decision |
 | `sensor.victron_mpc_battery_optimizer_24h_projected_cost` | 24h Projected Cost | $ | Projected cost with grid/export/wear breakdown |
@@ -149,7 +149,7 @@ Every 5 minutes, the DataUpdateCoordinator runs a full optimization cycle:
 4. **Builds a 24-hour forecast** of solar production, household load, and buy/sell prices
 5. **Solves a Linear Program** (scipy HiGHS, 288 timesteps) minimizing total electricity cost
 6. **Applies safety overrides** (spike = discharge, negative pricing = charge)
-7. **Writes Modbus registers** R2901 (ESS min SoC) and R2706 (max feed-in) to the Cerbo GX
+7. **Writes Modbus registers** R2901 (ESS min SoC) and R2706 (max feed-in) to the Cerbo GX. For solar_charge/hold/discharge modes, R2901 is set BELOW current SoC (as a floor). Only grid_charge sets R2901 ABOVE current SoC.
 
 The LP objective minimizes:
 ```

@@ -11,7 +11,7 @@ All entities are grouped under a single **Victron MPC Battery Optimizer** device
 | | |
 |---|---|
 | **Entity ID** | `sensor.victron_mpc_battery_optimizer_battery_plan` |
-| **State** | Target SoC percentage (e.g., `45.0`) |
+| **State** | SoC floor percentage for non-grid-charge modes, or grid charge target for grid_charge mode (e.g., `20.0` as floor, `80.0` as grid charge target) |
 | **Unit** | % |
 | **Device Class** | battery |
 | **Icon** | mdi:battery-charging |
@@ -22,7 +22,7 @@ All entities are grouped under a single **Victron MPC Battery Optimizer** device
 |-----------|------|-------------|
 | `mode` | string | Current mode: `hold`, `discharge`, `solar_charge`, `grid_charge`, `export` |
 | `reason` | string | Human-readable explanation of the decision |
-| `target_register` | int | R2901 value that was/would be written (100-1000) |
+| `target_register` | int | R2901 value that was/would be written (100-1000). For non-grid-charge modes, this is the SoC floor (BELOW current SoC). For grid_charge, this is ABOVE current SoC. |
 | `feedin_register` | int | R2706 value that was/would be written (0 or 70) |
 | `shadow_mode` | bool | Whether shadow mode is active |
 | `last_push` | int | Unix timestamp of last update |

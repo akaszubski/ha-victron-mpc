@@ -90,9 +90,11 @@ If the [ha-solcast-solar](https://github.com/BJReplay/ha-solcast-solar) HACS int
 
 The entity `sensor.solcast_pv_forecast_forecast_today` provides 30-minute resolution power forecasts (kW) with `pv_estimate`, `pv_estimate10`, and `pv_estimate90` fields in its `detailedForecast` attribute. MPC interpolates these to 5-minute steps.
 
-Because Solcast already accounts for clouds, shading, and panel orientation, the Open-Meteo cloud derating is **not applied** when Solcast is the active source (the cloud_coverage sensor still updates independently for dashboard use).
+Because Solcast already accounts for clouds and panel orientation, the Open-Meteo cloud derating is **not applied** when Solcast is the active source (the cloud_coverage sensor still updates independently for dashboard use).
 
-When Solcast data is unavailable (entity missing, stale, or API rate-limited), the integration automatically falls through to VRM-based forecasting.
+**However**, Solcast can over-forecast by approximately 2x for sites with significant shading (trees, nearby buildings, etc.) because Solcast's satellite view cannot see ground-level obstructions. To correct this, the integration **always** applies a VRM P90 per-hour per-month envelope cap to Solcast forecasts. The VRM envelope is built from 180 days of actual production data grouped by month, capturing your site's real shading pattern at each hour of the day. This cap is mandatory and cannot be disabled.
+
+When Solcast data is unavailable (entity missing, stale, or API rate-limited), the integration automatically falls through to VRM-based forecasting. If VRM data is unavailable when Solcast is active, a warning is logged because the Solcast forecast may be significantly over-optimistic without the shading envelope cap.
 
 ### Priority 1-4: VRM and Fallbacks
 
@@ -151,7 +153,7 @@ Where `impact` defaults to 0.75 and `floor` defaults to 0.50.
 
 The integration tries each source in order, falling through when one is unavailable:
 
-0. **ha-solcast-solar** (satellite, most accurate) -- rooftop-calibrated, cloud-aware, no derating needed
+0. **ha-solcast-solar** (satellite, most accurate) -- rooftop-calibrated, cloud-aware, always capped by VRM P90 per-hour shading envelope
 1. **Weather-classified VRM envelope** -- P90/P70/P40/P15 based on day type
 2. **VRM 30-day actual average** -- scaled by VRM daily total
 3. **HA recorder history** -- 7 days of local solar power sensor data from the HA database (requires recorder integration with sufficient history retention)
@@ -194,15 +196,26 @@ The coordinator applies hard overrides after the LP solver runs. These take prio
 
 ### Register 2901 (ESS Minimum SoC)
 
-Register 2901 is a **threshold, not a target**:
-
-| Battery vs Threshold | Inverter Behavior |
-|---------------------|-------------------|
-| SoC < threshold | Grid powers loads + charges battery UP to threshold |
-| SoC = threshold | Grid powers loads, battery holds |
-| SoC > threshold | Battery discharges to power loads, down to threshold |
-
-Solar always charges regardless of threshold.
+> **CRITICAL: Register 2901 Behavior**
+>
+> Register 2901 is a **floor/threshold, not a target**. The relationship between the register value and the current battery SoC determines what the Victron ESS does:
+>
+> | Register vs Current SoC | Inverter Behavior |
+> |------------------------|-------------------|
+> | Register **ABOVE** current SoC | **Grid charges battery** up to the register value |
+> | Register **AT** current SoC | Grid powers loads, battery holds |
+> | Register **BELOW** current SoC | Battery **discharges** to power loads, down to register value |
+>
+> Solar always charges the battery regardless of the register value. The ESS accepts solar charging naturally.
+>
+> **This means:**
+> - For `solar_charge`, `hold`, and `discharge` modes: the register MUST be set **BELOW** the current SoC. It represents the hard SoC floor (e.g., 200 = 20%), NOT the SoC trajectory or target.
+> - For `grid_charge` mode ONLY: set the register **ABOVE** the current SoC to trigger grid charging up to that level.
+> - Setting the register at or above the current SoC when you do NOT want grid charging will cause **unwanted grid import**. This was a critical bug discovered on 2026-03-19.
+>
+> **Common mistake (OLD, WRONG):** "Register = target SoC" -- this is incorrect for non-grid-charge modes and causes grid import.
+>
+> **Correct approach:** For solar_charge/hold/discharge, register = the lowest SoC the battery should discharge to (the floor), NOT where you want SoC to be.
 
 Override priority (first match wins). All thresholds are configurable via number entities -- no hardcoded values in the logic.
 
@@ -210,7 +223,8 @@ Override priority (first match wins). All thresholds are configurable via number
 |----------|-----------|----------|--------|
 | 1 | Buy price < $0 (negative) | 1000 | Charge to 100% -- paid to consume |
 | 2 | Spike active or price > spike_threshold (default $1.00) | 100 | Discharge to 10% -- drain battery |
-| 3 | Normal | LP decision | Optimizer's computed target |
+| 3 | Normal, grid_charge mode | LP target (above current SoC) | Grid charges to target |
+| 4 | Normal, all other modes | SoC floor (below current SoC) | Battery discharges/holds freely above floor |
 
 The **Spike Threshold** (`number.victron_mpc_battery_optimizer_spike_threshold`) controls when override #2 fires. Lower it to be more aggressive, raise it to only react to extreme spikes.
 
@@ -305,11 +319,13 @@ The optimizer outputs one of these modes, visible in the Decision sensor:
 
 | Mode | Meaning | Register Effect |
 |------|---------|-----------------|
-| `hold` | Maintain SoC, use grid for loads | Near current SoC |
-| `discharge` | Use battery for loads (expensive period) | Low floor (200-400) |
-| `solar_charge` | Charging from solar excess | Low floor, solar does work |
-| `grid_charge` | Charge from grid (cheap period) | High (800-1000) |
-| `export` | Exporting excess to grid | Low floor, R2706=70 |
+| `hold` | Maintain SoC, use grid for loads | **Below** current SoC (floor only) |
+| `discharge` | Use battery for loads (expensive period) | **Below** current SoC (low floor, e.g., 200) |
+| `solar_charge` | Charging from solar excess | **Below** current SoC (floor only, solar charges naturally) |
+| `grid_charge` | Charge from grid (cheap period) | **Above** current SoC (e.g., 800-1000, triggers grid charge) |
+| `export` | Exporting excess to grid | **Below** current SoC (floor only), R2706=70 |
+
+**Important**: For all modes except `grid_charge`, the register must be set BELOW the current SoC. Setting it at or above the current SoC will cause unwanted grid import. See the "Register 2901" section above for the full explanation.
 
 ---
 
@@ -345,10 +361,11 @@ If you have a diesel generator with auto-start via the Cerbo GX, the integration
 10:00am, SoC=45%, Solar=2.5kW, Amber=$0.30 now/$0.48 at 6pm
 Solar forecast: 18 kWh remaining (P90 clear day)
 
-Decision: HOLD at 45%
+Decision: SOLAR_CHARGE (hold floor, let solar do the work)
   Solar will charge to ~90% by sunset (free energy)
   Evening peak at $0.48 -> battery discharge saves $0.48/kWh
-  R2901=450, R2706=0
+  R2901=200 (floor at 20%, BELOW current SoC -- solar charges naturally)
+  R2706=0 (block export, self-consume)
 ```
 
 ### Cheap Overnight, Cloudy Tomorrow
@@ -359,7 +376,8 @@ Tomorrow: overcast, 8 kWh solar forecast
 Decision: GRID CHARGE to 80%
   Cheapest power in 24h window
   Little solar tomorrow to charge battery
-  R2901=800, R2706=70
+  R2901=800 (ABOVE current 35% SoC -- triggers grid charge to 80%)
+  R2706=70 (open feed-in for grid access)
 ```
 
 ### Price Spike
@@ -369,7 +387,7 @@ Decision: GRID CHARGE to 80%
 Decision: GRID CHARGE now at $0.50
   LP sees $5 tonight -> pre-charges at 10x cheaper rate
   Discharges through spike, saves ~$30
-  R2901=800 (charge), then 100 during spike
+  R2901=800 (ABOVE 40% SoC -- grid charges to 80%), then 100 during spike (discharge)
 ```
 
 ### Negative Pricing

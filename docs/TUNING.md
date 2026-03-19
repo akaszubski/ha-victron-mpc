@@ -225,6 +225,8 @@ Check the Decision sensor's `buy_price_actual` attribute to see what overnight p
 
 **Note**: If you have Solcast installed, cloud layer tuning is less critical for solar forecasting because Solcast already accounts for clouds, shading, and panel orientation in its satellite-based model. The cloud coverage sensor and Open-Meteo data still update for dashboard display and day-type classification.
 
+**Important**: Solcast can over-forecast by approximately 2x for sites with significant shading (trees, nearby buildings). The integration always applies a VRM P90 per-hour per-month envelope cap to Solcast forecasts to correct for this. The VRM envelope captures your site's actual shading patterns from 180 days of production history grouped by month. If VRM data is unavailable, a warning is logged because the Solcast forecast may be significantly over-optimistic.
+
 ### "Solar forecast too pessimistic"
 
 1. Check if Solcast is available -- if `solar_forecast_source` is `solcast_ha`, the forecast should be well-calibrated. If Solcast is installed but not being used, check the Troubleshooting guide for Solcast entity issues

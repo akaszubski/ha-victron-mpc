@@ -60,7 +60,7 @@ and combination scenarios. Use this as the regression test checklist.
 | 31 | Clear day, good solar | Charge to 100% | Solcast + VRM P90 envelope cap | COVERED |
 | 32 | Cloudy day | Low production forecast | Solcast satellite sees cloud | COVERED |
 | 33 | Partly cloudy, variable | Variable production | Cloud layers update 30min | COVERED |
-| 34 | Solcast over-forecast (clear) | Raw 35kWh capped to ~20kWh | VRM P90 hourly shading envelope | COVERED |
+| 34 | Solcast over-forecast (clear) | Raw 35kWh capped to ~20kWh (Solcast over-forecasts ~2x for shaded sites) | VRM P90 per-hour per-month envelope ALWAYS applied | COVERED |
 | 35 | Morning shade, afternoon sun | Per-hour shading pattern | VRM P90 per-hour per-month | COVERED |
 | 36 | Unexpected rain mid-day | Intraday correction | _maybe_adjust_day_type downgrades | COVERED |
 | 37 | Weather entity unavailable | Can't classify day type | Default partly_cloudy | DEGRADED |
@@ -73,8 +73,8 @@ and combination scenarios. Use this as the regression test checklist.
 | 39 | Battery near empty (10%) | Grid + genset backup | Hardware SoC floor + auto-start | COVERED |
 | 40 | Solver fails (infeasible) | Conservative hold | _build_fallback | COVERED |
 | 41 | Solver slow (>2s) | Delayed decision | Completes in executor, logged | COVERED |
-| 42 | Two MPC instances writing | Register conflicts | YAML automations disabled | COVERED |
-| 43 | Mac runner still running | Pushes stale sensors | Harmless, automations off | COVERED |
+| 42 | Two MPC instances writing | Register conflicts | YAML automations disabled (initial_state: false) | COVERED |
+| 43 | Mac runner still running | Pushes stale sensors | Harmless, automations off (initial_state: false prevents re-enable on restart) | COVERED |
 
 ## Combination Scenarios (Multi-Failure)
 

@@ -222,7 +222,7 @@ These are fixed values used by the integration. They are not user-configurable b
 
 | Constant | Value | Description |
 |----------|-------|-------------|
-| `REGISTER_ESS_MIN_SOC` | 2901 | Victron Modbus register for ESS minimum SoC. Value = SoC% x 10, range 100-1000. |
+| `REGISTER_ESS_MIN_SOC` | 2901 | Victron Modbus register for ESS minimum SoC. Value = SoC% x 10, range 100-1000. **Critical**: When register >= current SoC, ESS charges from grid. When register < current SoC, battery discharges freely down to register value. For non-grid-charge modes, always set BELOW current SoC. |
 | `REGISTER_MAX_FEED_IN` | 2706 | Victron Modbus register for maximum grid feed-in power. Units = 100W/value (70 = 7000W). |
 | `REGISTER_ESS_MIN` | 100 | Minimum valid R2901 value (10% SoC). |
 | `REGISTER_ESS_MAX` | 1000 | Maximum valid R2901 value (100% SoC). |
