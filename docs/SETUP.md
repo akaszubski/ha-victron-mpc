@@ -127,6 +127,22 @@ Select the Victron entities from your existing HA Modbus integration:
 
 Leave both blank if you do not have a VRM account. The integration will fall back to HA sensor history for solar forecasting, which is less accurate but functional.
 
+## HA Recorder Configuration
+
+The integration uses the HA recorder database as a fallback for solar and load forecasting when external APIs (Solcast, VRM) are unavailable. For this to work well, the recorder should retain at least **7 days** of history for your solar power and AC consumption entities.
+
+HA's default recorder retention is 10 days, which is sufficient. If you have customized `purge_keep_days` to a shorter period, consider increasing it:
+
+```yaml
+# configuration.yaml
+recorder:
+  purge_keep_days: 10
+```
+
+**Note for Raspberry Pi users**: Longer retention periods increase SD card writes and database size. If you are running on a Pi with limited storage, 7-10 days is a good balance between forecast quality and storage use. If storage is very constrained, the integration will still work -- it falls through to a synthetic bell curve when recorder history is insufficient. Consider using an external MariaDB or PostgreSQL database for the recorder to reduce SD card wear.
+
+---
+
 ## Post-Setup Verification
 
 After completing the config flow, the integration creates a **Victron MPC Battery Optimizer** device with all entities. Here is what to check:
@@ -138,7 +154,7 @@ Go to **Settings** > **Devices & Services** > **Victron MPC Battery Optimizer** 
 - 11 sensor entities (Battery Plan, Decision, Effective Price, etc.)
 - 6 number entities (Battery Wear Cost, Sunset Reward, etc.)
 - 1 switch entity (Shadow Mode)
-- 2 binary sensor entities (Data Stale, Spike Override Active)
+- 3 binary sensor entities (Data Stale, Spike Override Active, Modbus Connected)
 
 ### 2. First optimization cycle ran
 

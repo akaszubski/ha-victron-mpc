@@ -118,6 +118,151 @@ The Victron ESS Assistant must be installed and configured. Without it, register
 
 ---
 
+## Amber API Down
+
+### Symptoms
+- Amber price entity shows `unavailable` or `unknown`
+- Decision sensor shows `override_applied: true` with reason mentioning "defensive mode"
+- Persistent notification: "MPC: Amber Pricing Unavailable"
+
+### What Happens
+
+When the Amber API is unavailable for more than 5 minutes, the integration activates **defensive discharge** mode:
+
+- **17:00-21:00 (evening peak)**: Assumes $2.00/kWh -- the optimizer discharges the battery to avoid potential spike-rate grid import
+- **All other hours**: Assumes $0.30/kWh -- conservative hold to preserve battery
+
+This is intentionally aggressive during evening peak because that is when the most expensive spikes occur. Missing a $5-25/kWh spike while running on grid power could cost $10-50 in a single hour.
+
+### Solutions
+
+1. **Check the Amber integration**: Go to Settings > Integrations > Amber Electric and verify it is connected
+2. **Check Amber's status page**: Amber may have a service outage
+3. **Check your internet connection**: Amber requires internet access
+4. **Wait**: Brief Amber outages (under 5 minutes) use the last known price and do not trigger defensive mode. The integration recovers automatically when Amber returns.
+
+### After Recovery
+
+When the Amber entity returns to a valid state, the integration immediately:
+- Switches back to real Amber pricing
+- Clears the defensive mode
+- Dismisses the persistent notification on the next successful cycle
+
+---
+
+## Modbus Communication Failed
+
+### Symptoms
+- `binary_sensor.victron_mpc_battery_optimizer_modbus_connected` is OFF
+- Persistent notification: "MPC: Modbus Communication Failed"
+- Logs show `Failed to write R2901=XXX` or `Failed to write R2706=XXX`
+- Battery behavior does not change despite different MPC decisions
+
+### What Happens
+
+After 3 consecutive failed register writes, the integration marks Modbus as unhealthy. The registers remain at their **last successfully written values** -- the integration cannot change the battery's behavior until Modbus is restored.
+
+### Solutions
+
+1. **Ping the Cerbo GX**: `ping 192.168.0.197` (your Cerbo IP) -- if unreachable, it is a network issue
+2. **Check Cerbo GX is powered**: Physical inspection, or check VRM portal
+3. **Verify Modbus TCP is enabled**: Cerbo GX > Settings > Services > Modbus TCP
+4. **Check the HA Modbus integration**: Settings > Integrations > Modbus -- it should be online
+5. **Restart the Modbus integration**: Sometimes the TCP connection drops. Disabling and re-enabling the Modbus integration in HA can restore it
+6. **Check for IP changes**: If the Cerbo GX got a new DHCP address, the Modbus integration will fail. Consider assigning a static IP or DHCP reservation
+
+### After Recovery
+
+When register writes succeed again, the integration automatically:
+- Resets the failure counter
+- Sets the Modbus Connected binary sensor back to ON
+- Sends a "Modbus Communication Restored" persistent notification
+
+---
+
+## Internet Outage
+
+### Symptoms
+- Multiple API-dependent sensors may show degraded data
+- `solar_forecast_source` attribute changes to `ha_history` or `bell_curve`
+- Cloud coverage falls back to `met.no_total` source
+- Amber prices may go stale
+
+### What Happens
+
+The integration degrades gracefully through its fallback chains:
+
+**Solar forecast fallback chain:**
+1. Solcast -- unavailable (requires internet)
+2. VRM cache -- available for ~24h from last successful fetch
+3. **HA recorder history** -- uses 7 days of local solar sensor data to build an hourly profile
+4. Synthetic bell curve -- last resort if recorder has no data
+
+**Load forecast fallback chain:**
+1. VRM consumption forecast -- unavailable (requires internet)
+2. **HA recorder history** -- uses 7 days of local load sensor data
+3. Typical residential curve -- last resort
+
+**Price forecast:**
+- Amber goes stale after the last received forecast expires
+- Defensive discharge activates after 5 minutes (see "Amber API Down" above)
+
+**Cloud/weather:**
+- Open-Meteo unavailable, met.no weather entity may use cached forecast
+- Solar derating falls back to weather entity's total cloud percentage
+
+### The Key Point
+
+With HA recorder history enabled (default in HA), the integration can operate for extended periods without internet. The forecasts are less accurate than Solcast or VRM, but they capture your site's actual solar/load patterns from recent days.
+
+### Improving Offline Resilience
+
+Ensure your HA recorder retains at least 7 days of history:
+
+```yaml
+# configuration.yaml
+recorder:
+  purge_keep_days: 10
+```
+
+See [SETUP.md](SETUP.md) for more details on recorder configuration.
+
+---
+
+## How to Test Failure Scenarios
+
+The integration has a comprehensive 48-scenario failure matrix documented in [TEST_SCENARIOS.md](TEST_SCENARIOS.md). Here are practical ways to test key scenarios:
+
+### Simulated API Failures (Safe in Shadow Mode)
+
+| Scenario | How to Simulate |
+|----------|----------------|
+| Amber down | Disable the Amber Electric integration temporarily |
+| VRM down | Remove VRM token from the MPC config entry options |
+| Solcast down | Disable the ha-solcast-solar integration |
+| Internet down | Block outbound traffic on your Pi's firewall |
+| Modbus down | Disable the Modbus integration |
+
+### What to Observe
+
+After simulating a failure, check:
+1. **Decision sensor** -- `solar_forecast_source` and `override_reason` should reflect the fallback
+2. **Solar Forecast Today** -- `solar_forecast_source` attribute shows which level of the chain is active
+3. **Binary sensors** -- Data Stale, Modbus Connected should reflect the failure state
+4. **HA logs** -- filter for `victron_mpc` to see fallback chain logging
+5. **Persistent notifications** -- Amber down and Modbus failure notifications should appear
+
+### Automated Test Suite
+
+The integration includes 178 tests covering these failure scenarios:
+
+```bash
+cd /tmp/ha-victron-mpc
+python -m pytest tests/ -v
+```
+
+---
+
 ## Solcast Issues
 
 ### Solcast Entity Not Found

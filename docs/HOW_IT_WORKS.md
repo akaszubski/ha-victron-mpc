@@ -154,7 +154,7 @@ The integration tries each source in order, falling through when one is unavaila
 0. **ha-solcast-solar** (satellite, most accurate) -- rooftop-calibrated, cloud-aware, no derating needed
 1. **Weather-classified VRM envelope** -- P90/P70/P40/P15 based on day type
 2. **VRM 30-day actual average** -- scaled by VRM daily total
-3. **HA sensor history** -- 7 days of solar power sensor data
+3. **HA recorder history** -- 7 days of local solar power sensor data from the HA database (requires recorder integration with sufficient history retention)
 4. **Synthetic bell curve** (last resort) -- Gaussian scaled to estimated daily kWh
 
 The active source is reported in the Solar Forecast Today sensor's `solar_forecast_source` attribute.
@@ -231,6 +231,65 @@ The conservative default (block export) is intentional. Household demand can spi
 ### Stale Data Safety
 
 If the coordinator fails to update for 10+ minutes (2 missed cycles), the Data Stale binary sensor turns on. In a future release, stale safety will automatically set conservative register values.
+
+---
+
+## Failure Resilience
+
+The integration is designed to operate safely when external services fail. Three safety systems provide defense-in-depth:
+
+### HA Recorder History Fallback (Solar + Load)
+
+When both Solcast and VRM are unavailable (internet outage, API down, token expired), the integration queries the local HA recorder database for 7 days of historical sensor data. It groups readings by hour-of-day to build a profile that captures your site's actual patterns (shading, usage habits, seasonal timing).
+
+The fallback chain for solar forecasting:
+
+| Priority | Source | Requires | Accuracy |
+|----------|--------|----------|----------|
+| 0 | Solcast (ha-solcast-solar) | Internet + API key | Best -- satellite calibrated |
+| 1 | VRM weather-classified envelope | Internet + VRM token | Good -- historical percentiles |
+| 2 | VRM 30-day average | Internet + VRM token | Fair -- no weather classification |
+| 3 | HA recorder history | Local database only | Fair -- 7-day average profile |
+| 4 | Synthetic bell curve | Nothing | Rough -- generic Gaussian |
+
+Load forecasting follows the same pattern: VRM ML forecast, then HA recorder history, then a typical residential curve.
+
+The active source is reported in the Solar Forecast Today sensor's `solar_forecast_source` attribute (`solcast_ha`, `clearsky_p90`, `vrm_30d_avg`, `ha_history`, or `bell_curve`).
+
+### Amber-Down Defensive Discharge
+
+When the Amber Electric API becomes unavailable for more than 5 minutes, the integration cannot detect price spikes. Rather than assuming flat $0.30/kWh pricing at all times (which would miss expensive evening peaks), it applies time-of-day defensive pricing:
+
+| Time Period | Assumed Price | Rationale |
+|-------------|--------------|-----------|
+| 17:00-21:00 (evening peak) | $2.00/kWh | Peak demand window -- highest spike probability |
+| All other hours | $0.30/kWh | Conservative hold -- typical off-peak rate |
+
+This means that during an Amber outage:
+- **Evening**: The optimizer sees $2.00 prices and discharges the battery to power loads, avoiding potential grid import at spike rates
+- **Off-peak**: The optimizer holds conservatively, preserving battery for the next potential peak
+- **Recovery**: When Amber comes back online, the integration immediately returns to real pricing
+
+A persistent notification alerts you when Amber has been down for more than 5 minutes.
+
+### Modbus Health Monitoring
+
+The integration tracks consecutive Modbus write failures. After 3 consecutive failures:
+
+1. The `binary_sensor.victron_mpc_battery_optimizer_modbus_connected` entity turns OFF
+2. A persistent notification is created: "Cannot write to Victron Cerbo GX"
+3. The `modbus_healthy` and `modbus_failures` attributes update on the coordinator data
+
+When communication is restored, the binary sensor returns to ON and a recovery notification is sent.
+
+Common causes of Modbus failure:
+- Cerbo GX rebooted or lost network
+- Modbus TCP disabled on the Cerbo GX
+- Network switch/router issue between HA and Cerbo GX
+
+Note: The integration cannot auto-fix Modbus failures -- the registers remain at their last written values. This is a hardware/network issue requiring human intervention. The monitoring ensures you are alerted quickly.
+
+See [TEST_SCENARIOS.md](TEST_SCENARIOS.md) for the full 48-scenario failure matrix covering all combinations of API failures, price events, and hardware issues.
 
 ---
 

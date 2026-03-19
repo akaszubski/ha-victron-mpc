@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-03-19
+
+### Added
+
+- **HA recorder history fallback** (#26): When Solcast and VRM are both unavailable, the integration queries 7 days of local HA recorder data for solar power and AC consumption entities. Builds an hourly profile grouped by hour-of-day to capture site-specific patterns (shading, usage habits). Active source shown as `ha_history` in the `solar_forecast_source` attribute.
+- **Amber-down defensive discharge** (#27): When the Amber API is unavailable for more than 5 minutes, the integration applies time-of-day defensive pricing -- $2.00/kWh during evening peak (17:00-21:00) to protect against undetected spikes, $0.30/kWh at other times. Persistent notification alerts when defensive mode activates. Automatically recovers when Amber returns.
+- **Modbus health monitoring** (#28): Tracks consecutive Modbus register write failures. After 3 failures, the new `binary_sensor.victron_mpc_battery_optimizer_modbus_connected` entity turns OFF and a persistent notification alerts the user. Recovery notification sent when writes succeed again. Coordinator data includes `modbus_healthy` (bool) and `modbus_failures` (int) attributes.
+- New binary sensor: `binary_sensor.victron_mpc_battery_optimizer_modbus_connected` (device class: connectivity)
+- Test coverage: 178 tests covering all 48 failure scenarios in the test matrix
+
 ## [0.2.0] - 2026-03-18
 
 ### Added
@@ -37,5 +47,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Diagnostics**: Downloadable diagnostics dump with redacted credentials
 - **Documentation**: Setup guide, technical deep-dive, tuning guide, troubleshooting, full entity reference with example Lovelace cards
 
+[0.3.0]: https://github.com/akaszubski/ha-victron-mpc/releases/tag/v0.3.0
 [0.2.0]: https://github.com/akaszubski/ha-victron-mpc/releases/tag/v0.2.0
 [0.1.0]: https://github.com/akaszubski/ha-victron-mpc/releases/tag/v0.1.0

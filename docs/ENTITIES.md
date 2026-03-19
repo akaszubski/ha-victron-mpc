@@ -249,6 +249,25 @@ Turns ON when the coordinator has not successfully updated (data is stale). This
 
 Turns ON when a price spike override is actively forcing discharge (R2901=100).
 
+### Modbus Connected
+
+| | |
+|---|---|
+| **Entity ID** | `binary_sensor.victron_mpc_battery_optimizer_modbus_connected` |
+| **Device Class** | connectivity |
+| **Icon** | mdi:lan-connect |
+
+Turns OFF when Modbus communication to the Victron Cerbo GX has failed 3 or more consecutive times. This means register writes (R2901, R2706) are NOT being applied. The registers remain at their last successfully written values.
+
+When communication is restored, the sensor returns to ON and a recovery persistent notification is sent.
+
+**Related coordinator data attributes**:
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `modbus_healthy` | bool | True if fewer than 3 consecutive write failures |
+| `modbus_failures` | int | Count of consecutive Modbus write failures (resets on success) |
+
 ---
 
 ## Example Lovelace Dashboard
@@ -275,6 +294,8 @@ entities:
     name: Health
   - entity: binary_sensor.victron_mpc_battery_optimizer_spike_override_active
     name: Spike Active
+  - entity: binary_sensor.victron_mpc_battery_optimizer_modbus_connected
+    name: Modbus
 ```
 
 ### Tuning Sliders Card

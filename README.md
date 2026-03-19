@@ -33,6 +33,9 @@ Typical savings are 20-40% on electricity costs compared to a fixed SoC strategy
 - **Seasonal load adjustment** -- VRM monthly consumption patterns + outdoor temperature correction
 - **AC demand detection** -- indoor temperature sensors + climate entity state for real-time load boost
 - **Genset cost integration** -- live diesel pricing from PetrolSpy factors into LP decisions
+- **HA recorder history fallback** -- uses 7 days of local solar/load history when VRM and Solcast are unavailable
+- **Amber-down defensive discharge** -- assumes spike-risk pricing during evening peak (17:00-21:00) when Amber API is unavailable
+- **Modbus health monitoring** -- tracks consecutive write failures, alerts via persistent notification, binary sensor for dashboards
 - **Shadow mode** -- validate all decisions without writing registers (enabled by default)
 - **Adjustable tunables** -- modify optimization parameters from the HA UI, no config files needed
 
@@ -126,6 +129,7 @@ All entities are grouped under a single **Victron MPC Battery Optimizer** device
 |--------|------|-------------|
 | `binary_sensor.victron_mpc_battery_optimizer_data_stale` | Data Stale | Problem indicator -- no successful update in 10+ minutes |
 | `binary_sensor.victron_mpc_battery_optimizer_spike_override_active` | Spike Override Active | Price spike override is currently forcing discharge |
+| `binary_sensor.victron_mpc_battery_optimizer_modbus_connected` | Modbus Connected | Connectivity indicator -- OFF after 3+ consecutive Modbus write failures |
 
 See [docs/ENTITIES.md](docs/ENTITIES.md) for detailed attribute documentation and example dashboard cards.
 
@@ -162,6 +166,7 @@ See [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md) for the full technical explanat
 | [docs/TUNING.md](docs/TUNING.md) | Tunable parameters, common scenarios, recommended adjustments |
 | [docs/ENTITIES.md](docs/ENTITIES.md) | Complete entity reference with attributes and example Lovelace cards |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common issues, debug logging, diagnostics, rollback |
+| [docs/TEST_SCENARIOS.md](docs/TEST_SCENARIOS.md) | 48-scenario failure matrix with coverage status |
 | [CHANGELOG.md](CHANGELOG.md) | Release history |
 
 ## License

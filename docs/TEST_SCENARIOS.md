@@ -8,11 +8,11 @@ and combination scenarios. Use this as the regression test checklist.
 | # | Scenario | Solar Forecast | Price Forecast | Register Writes | Detection | Contingency | Status |
 |---|---|---|---|---|---|---|---|
 | 1 | All normal | Solcast + VRM cap | Amber 30h | Optimizer | - | - | COVERED |
-| 2 | Internet down | VRM cache (24h) then bell curve | Amber stale, $0.30 flat | Stale safety R2901=300 | Amber unavailable | Works 24h, degrades | GAP: HA history |
-| 3 | Internet down >24h | Bell curve only | $0.30 flat | Conservative hold 30% | Data stale sensor | Battery holds, grid powers house | GAP: HA history |
+| 2 | Internet down | VRM cache (24h) then HA history | Amber stale, defensive discharge | Stale safety R2901=300 | Amber unavailable | Works 24h+, HA history fallback | COVERED |
+| 3 | Internet down >24h | HA history profile (7d) | Defensive pricing ($2 peak/$0.30 off) | Conservative hold 30% | Data stale sensor | HA history + defensive discharge | COVERED |
 | 4 | Grid down | Normal (if internet via 4G) | Amber irrelevant | ESS standalone | Genset auto-start | Victron native | COVERED |
 | 5 | Grid + internet down | Bell curve | No pricing | ESS standalone | Genset auto-start | Victron independent of MPC | COVERED |
-| 6 | Modbus TCP down | Normal | Normal | FAIL - can't write | Write exceptions logged | Registers stay at last value | GAP: no recovery |
+| 6 | Modbus TCP down | Normal | Normal | FAIL - can't write | modbus_connected OFF + notification | Registers stay at last value, user alerted | COVERED |
 | 7 | HA crash/restart | Cold cache | Amber reloads | Last value during restart | setup_retry state | Coordinator retries | COVERED |
 | 8 | Pi SD card failure | Everything stops | Everything stops | Frozen | Nothing running | Manual intervention | HARDWARE RISK |
 
@@ -20,10 +20,10 @@ and combination scenarios. Use this as the regression test checklist.
 
 | # | Scenario | What Happens | Detection | Contingency | Status |
 |---|---|---|---|---|---|
-| 9 | Amber API down | Price unavailable | mpc_stale_data after 10min | $0.30 flat, R2901=300 | COVERED |
-| 10 | Amber down + spike happening | Spike missed entirely | No detection possible | Discharges at assumed $0.30 | GAP: FINANCIAL RISK |
+| 9 | Amber API down | Price unavailable, defensive pricing | mpc_stale_data after 10min | $2.00 peak / $0.30 off-peak + notification | COVERED |
+| 10 | Amber down + spike happening | Defensive discharge during 17-21h | Amber unavailable >5min | $2.00 assumed price forces discharge | COVERED |
 | 11 | VRM API down | Solcast still works | Warning logged | Solcast then bell curve | COVERED |
-| 12 | VRM down + no Solcast | Bell curve only | Logged | Crude but safe | GAP: HA history |
+| 12 | VRM down + no Solcast | HA history profile (7d) | Logged | Local data captures shading/patterns | COVERED |
 | 13 | Solcast API down | Entity goes stale | Falls through to VRM | VRM historical still good | COVERED |
 | 14 | Open-Meteo down | Cloud layers unavailable | cloud_source: met.no_total | met.no total cloud | COVERED |
 | 15 | PetrolSpy down | Cache (24h) then default | Logged | Configured default price | COVERED |
@@ -35,8 +35,8 @@ and combination scenarios. Use this as the regression test checklist.
 |---|---|---|---|---|
 | 17 | Price spike ($1-25/kWh) | R2901=100, discharge everything | `is_spike or buy > $1.0` | COVERED |
 | 18 | Negative pricing | R2901=1000, charge (paid to consume) | `buy_price < 0` | COVERED |
-| 19 | Spike + Amber down | Can't detect spike | No override fires | GAP: FINANCIAL RISK |
-| 20 | Spike + internet down | Can't detect spike | No override fires | GAP: FINANCIAL RISK |
+| 19 | Spike + Amber down | Defensive discharge if 17-21h | $2.00 assumed during peak | COVERED |
+| 20 | Spike + internet down | Defensive discharge if 17-21h | $2.00 assumed during peak | COVERED |
 | 21 | Negative + Amber down | Can't detect negative | Misses free money | MISSED OPPORTUNITY |
 | 22 | Feed-in spike (high FIT) | R2706=70, export for profit | sell_price > $0.10 + SoC > 30% | COVERED |
 | 23 | Feed-in spike + Amber down | Can't detect high FIT | R2706=0 (block export) | MISSED REVENUE |
@@ -81,8 +81,8 @@ and combination scenarios. Use this as the regression test checklist.
 | # | Scenario | Risk Level | Status |
 |---|---|---|---|
 | 44 | Internet down + grid down | Low - ESS standalone | COVERED |
-| 45 | Amber + VRM + Solcast all down | Medium - bell curve + flat price | DEGRADED |
-| 46 | Modbus down + price spike | HIGH - can't discharge at $25/kWh | GAP: FINANCIAL |
+| 45 | Amber + VRM + Solcast all down | Medium - HA history + defensive pricing | COVERED |
+| 46 | Modbus down + price spike | HIGH - can't discharge at $25/kWh, user alerted | MONITORED |
 | 47 | HA restart during spike | Low - 60s blind spot | ACCEPTABLE |
 | 48 | Pi reboot overnight | Low - registers hold | COVERED |
 
@@ -90,19 +90,19 @@ and combination scenarios. Use this as the regression test checklist.
 
 | Status | Count | Description |
 |---|---|---|
-| COVERED | 35 | Full contingency, tested or validated |
-| DEGRADED | 4 | Works but with reduced forecast quality (#2, #16, #37, #45) |
-| GAP: HA history | 3 | Missing local fallback for solar/load (#2, #3, #12) |
-| GAP: FINANCIAL | 3 | Can miss price spikes when Amber down (#10, #19, #20) |
-| GAP: MODBUS | 1 | Can't write registers if Modbus fails (#46) |
+| COVERED | 43 | Full contingency, tested or validated |
+| DEGRADED | 2 | Works but with reduced forecast quality (#16, #37) |
+| MONITORED | 1 | Cannot auto-fix, but user alerted immediately (#46) |
 | MISSED OPP | 2 | Misses revenue opportunity, not dangerous (#21, #23) |
 | HARDWARE | 1 | SD card failure - outside software scope (#8) |
 
-## Priority Fixes
+**178 automated tests** cover these scenarios. Run `python -m pytest tests/ -v` to verify.
 
-1. **HA recorder history** — local solar/load fallback, fixes #2, #3, #12
-2. **Amber-down defensive discharge** — if Amber unavailable >5min AND recent prices were high, assume spike and discharge defensively. Fixes #10, #19, #20
-3. **Modbus health monitoring** — detect Modbus failure, alert immediately, can't auto-fix but fast human response. Fixes #46
+## Priority Fixes (All Implemented)
+
+1. **HA recorder history** (v0.3.0, #26) — local solar/load fallback from 7 days of recorder data. Fixed scenarios #2, #3, #12.
+2. **Amber-down defensive discharge** (v0.3.0, #27) — when Amber unavailable >5min, assumes $2.00/kWh during evening peak (17-21h) to protect against undetected spikes. Fixed scenarios #10, #19, #20.
+3. **Modbus health monitoring** (v0.3.0, #28) — tracks consecutive write failures, alerts via persistent notification and binary sensor after 3 failures. Fixed scenario #6, improved #46 to MONITORED status (cannot auto-fix hardware, but user is alerted immediately).
 
 ## How to Test
 
