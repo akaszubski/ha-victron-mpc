@@ -127,19 +127,27 @@ The Victron ESS Assistant must be installed and configured. Without it, register
 
 ### What Happens
 
-When the Amber API is unavailable for more than 5 minutes, the integration activates **defensive discharge** mode:
+When the Amber API is unavailable for more than the configured **Amber Blip Minutes** (default 5 minutes), the integration activates **defensive discharge** mode:
 
-- **17:00-21:00 (evening peak)**: Assumes $2.00/kWh -- the optimizer discharges the battery to avoid potential spike-rate grid import
-- **All other hours**: Assumes $0.30/kWh -- conservative hold to preserve battery
+- **17:00-21:00 (evening peak)**: Assumes the configured **Defensive Price** (default $2.00/kWh) -- the optimizer discharges the battery to avoid potential spike-rate grid import
+- **All other hours**: Assumes the configured **Fallback Price** (default $0.30/kWh) -- conservative hold to preserve battery
 
 This is intentionally aggressive during evening peak because that is when the most expensive spikes occur. Missing a $5-25/kWh spike while running on grid power could cost $10-50 in a single hour.
+
+All three parameters are adjustable:
+- **Amber Blip Minutes** (`number.victron_mpc_battery_optimizer_amber_blip_minutes`): Increase to tolerate longer Amber glitches before defensive mode activates
+- **Defensive Price** (`number.victron_mpc_battery_optimizer_defensive_price`): Raise for more aggressive defensive discharge, lower if your area has milder spikes
+- **Fallback Price**: Adjustable in the options flow
+
+**Tip**: If defensive discharge triggers too often due to brief Amber outages, increase the Amber Blip Minutes from 5 to 10 or 15. This gives Amber more time to recover from transient glitches before the integration switches to defensive pricing.
 
 ### Solutions
 
 1. **Check the Amber integration**: Go to Settings > Integrations > Amber Electric and verify it is connected
 2. **Check Amber's status page**: Amber may have a service outage
 3. **Check your internet connection**: Amber requires internet access
-4. **Wait**: Brief Amber outages (under 5 minutes) use the last known price and do not trigger defensive mode. The integration recovers automatically when Amber returns.
+4. **Wait**: Brief Amber outages (under the configured blip minutes) use the last known price and do not trigger defensive mode. The integration recovers automatically when Amber returns.
+5. **Adjust tolerance**: If Amber has frequent brief outages in your area, increase Amber Blip Minutes to reduce false defensive triggers
 
 ### After Recovery
 

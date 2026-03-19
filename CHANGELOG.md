@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-03-19
+
+### Added
+
+- **Parameterized safety thresholds** (#30): All safety and override thresholds are now configurable via UI number entities or options flow -- no hardcoded values remain in the decision logic. Four new number entities: Spike Threshold ($0.50-5.00, default $1.00), Defensive Price ($0.50-5.00, default $2.00), Amber Blip Minutes (1-15, default 5), Feed-in Export Threshold ($0.01-0.50, default $0.10). Options flow also exposes: overnight_price_low, overnight_price_high, feedin_soc_threshold, fallback_price.
+- Total number entities increased from 6 to 10
+
 ## [0.3.0] - 2026-03-19
 
 ### Added
@@ -47,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Diagnostics**: Downloadable diagnostics dump with redacted credentials
 - **Documentation**: Setup guide, technical deep-dive, tuning guide, troubleshooting, full entity reference with example Lovelace cards
 
+[0.4.0]: https://github.com/akaszubski/ha-victron-mpc/releases/tag/v0.4.0
 [0.3.0]: https://github.com/akaszubski/ha-victron-mpc/releases/tag/v0.3.0
 [0.2.0]: https://github.com/akaszubski/ha-victron-mpc/releases/tag/v0.2.0
 [0.1.0]: https://github.com/akaszubski/ha-victron-mpc/releases/tag/v0.1.0

@@ -199,18 +199,49 @@ All entities are grouped under a single **Victron MPC Battery Optimizer** device
 
 ---
 
-## Number Entities (Tunables)
+## Number Entities (10 Tunables)
+
+All decision thresholds are configurable via the UI -- no hardcoded values remain in the decision logic. Changes take effect on the next 5-minute optimization cycle.
+
+### Optimization Cost Factors
 
 | Entity ID | Name | Min | Max | Step | Unit | Default | Mode |
 |-----------|------|-----|-----|------|------|---------|------|
 | `number.…_battery_wear_cost` | Battery Wear Cost | 0.01 | 0.10 | 0.01 | $/kWh | 0.05 | Box |
 | `number.…_sunset_reward` | Sunset Reward | 0.01 | 0.10 | 0.01 | $/kWh | 0.04 | Box |
 | `number.…_overnight_hold_reward` | Overnight Hold Reward | 0.02 | 0.20 | 0.01 | $/kWh | 0.10 | Box |
+
+### SoC Constraints
+
+| Entity ID | Name | Min | Max | Step | Unit | Default | Mode |
+|-----------|------|-----|-----|------|------|---------|------|
 | `number.…_soc_floor` | SoC Floor | 15 | 30 | 1 | % | 20 | Slider |
 | `number.…_overnight_min_soc` | Overnight Min SoC | 20 | 45 | 1 | % | 30 | Slider |
+
+### Load Forecast
+
+| Entity ID | Name | Min | Max | Step | Unit | Default | Mode |
+|-----------|------|-----|-----|------|------|---------|------|
 | `number.…_load_inflation` | Load Inflation | 5 | 25 | 1 | % | 10 | Slider |
 
+### Safety & Override Thresholds
+
+| Entity ID | Name | Min | Max | Step | Unit | Default | Mode |
+|-----------|------|-----|-----|------|------|---------|------|
+| `number.…_spike_threshold` | Spike Threshold | 0.50 | 5.00 | 0.10 | $/kWh | 1.00 | Box |
+| `number.…_defensive_price` | Defensive Price | 0.50 | 5.00 | 0.10 | $/kWh | 2.00 | Box |
+| `number.…_amber_blip_minutes` | Amber Blip Minutes | 1 | 15 | 1 | min | 5 | Slider |
+| `number.…_feedin_export_threshold` | Feed-in Export Threshold | 0.01 | 0.50 | 0.01 | $/kWh | 0.10 | Box |
+
 (Entity IDs abbreviated -- full prefix is `number.victron_mpc_battery_optimizer`)
+
+**Spike Threshold**: The buy price above which the override logic forces an immediate discharge (R2901=100). Lower values trigger spike discharge more aggressively. At the default of $1.00/kWh, anything above $1/kWh is treated as a spike.
+
+**Defensive Price**: The assumed buy price during evening peak hours (17:00-21:00) when the Amber API is unavailable. The optimizer uses this value to decide whether to discharge defensively. A higher value makes defensive discharge more aggressive.
+
+**Amber Blip Minutes**: How many minutes of continuous Amber unavailability before defensive mode activates. Short Amber glitches (under this threshold) use the last known price instead of switching to defensive pricing. Increase this if Amber has brief intermittent outages that cause unnecessary defensive triggers.
+
+**Feed-in Export Threshold**: The minimum feed-in tariff (FIT) price required to allow grid export during a spike. During a spike, the integration only opens feed-in (R2706=70) if the FIT exceeds this value AND SoC is above the feed-in SoC threshold. Prevents exporting at negligible FIT rates.
 
 ---
 

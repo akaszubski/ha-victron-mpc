@@ -108,6 +108,8 @@ All entities are grouped under a single **Victron MPC Battery Optimizer** device
 
 ### Number Entities (Tunables)
 
+All decision thresholds are configurable -- no hardcoded values in the logic.
+
 | Entity | Name | Range | Default | Description |
 |--------|------|-------|---------|-------------|
 | `number.victron_mpc_battery_optimizer_battery_wear_cost` | Battery Wear Cost | $0.01-0.10/kWh | $0.05 | Penalty for battery cycling |
@@ -116,6 +118,10 @@ All entities are grouped under a single **Victron MPC Battery Optimizer** device
 | `number.victron_mpc_battery_optimizer_soc_floor` | SoC Floor | 15-30% | 20% | Minimum daytime battery level |
 | `number.victron_mpc_battery_optimizer_overnight_min_soc` | Overnight Min SoC | 20-45% | 30% | Hard overnight floor (22:00-06:00) |
 | `number.victron_mpc_battery_optimizer_load_inflation` | Load Inflation | 5-25% | 10% | Safety margin on load forecasts |
+| `number.victron_mpc_battery_optimizer_spike_threshold` | Spike Threshold | $0.50-5.00/kWh | $1.00 | Price above which spike discharge is forced |
+| `number.victron_mpc_battery_optimizer_defensive_price` | Defensive Price | $0.50-5.00/kWh | $2.00 | Assumed price during Amber outage (evening peak) |
+| `number.victron_mpc_battery_optimizer_amber_blip_minutes` | Amber Blip Minutes | 1-15 min | 5 | Minutes of Amber unavailability before defensive mode |
+| `number.victron_mpc_battery_optimizer_feedin_export_threshold` | Feed-in Export Threshold | $0.01-0.50/kWh | $0.10 | Minimum FIT price to allow spike export |
 
 ### Switches
 

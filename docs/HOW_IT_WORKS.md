@@ -204,13 +204,15 @@ Register 2901 is a **threshold, not a target**:
 
 Solar always charges regardless of threshold.
 
-Override priority (first match wins):
+Override priority (first match wins). All thresholds are configurable via number entities -- no hardcoded values in the logic.
 
 | Priority | Condition | Register | Effect |
 |----------|-----------|----------|--------|
 | 1 | Buy price < $0 (negative) | 1000 | Charge to 100% -- paid to consume |
-| 2 | Spike active or price > $1 | 100 | Discharge to 10% -- drain battery |
+| 2 | Spike active or price > spike_threshold (default $1.00) | 100 | Discharge to 10% -- drain battery |
 | 3 | Normal | LP decision | Optimizer's computed target |
+
+The **Spike Threshold** (`number.victron_mpc_battery_optimizer_spike_threshold`) controls when override #2 fires. Lower it to be more aggressive, raise it to only react to extreme spikes.
 
 ### Register 2706 (Max Grid Feed-In)
 
@@ -222,9 +224,11 @@ Feed-in rules (first match wins):
 |---|-----------|-------|-----------|
 | 1 | Negative buy price | 70 | Open -- we are paid to consume |
 | 2 | Grid charge mode | 70 | Inverter needs grid access |
-| 3 | Spike + FIT > $0.10 + SoC > 30% | 70 | Export for profit |
+| 3 | Spike + FIT > feedin_export_threshold (default $0.10) + SoC > feedin_soc_threshold (default 30%) | 70 | Export for profit |
 | 4 | SoC > 95% + FIT > $0 | 70 | Battery full, export excess |
 | 5 | Otherwise | 0 | Block export, self-consume |
+
+The **Feed-in Export Threshold** (`number.victron_mpc_battery_optimizer_feedin_export_threshold`) and **Feed-in SoC Threshold** (options flow) control when rule #3 allows spike export.
 
 The conservative default (block export) is intentional. Household demand can spike suddenly (dryer, oven, AC). Only export when the battery is essentially full or pricing clearly justifies it.
 
@@ -258,19 +262,21 @@ The active source is reported in the Solar Forecast Today sensor's `solar_foreca
 
 ### Amber-Down Defensive Discharge
 
-When the Amber Electric API becomes unavailable for more than 5 minutes, the integration cannot detect price spikes. Rather than assuming flat $0.30/kWh pricing at all times (which would miss expensive evening peaks), it applies time-of-day defensive pricing:
+When the Amber Electric API becomes unavailable for more than the configured **Amber Blip Minutes** (default 5 minutes, adjustable via `number.victron_mpc_battery_optimizer_amber_blip_minutes`), the integration cannot detect price spikes. Rather than assuming flat pricing at all times (which would miss expensive evening peaks), it applies time-of-day defensive pricing:
 
 | Time Period | Assumed Price | Rationale |
 |-------------|--------------|-----------|
-| 17:00-21:00 (evening peak) | $2.00/kWh | Peak demand window -- highest spike probability |
-| All other hours | $0.30/kWh | Conservative hold -- typical off-peak rate |
+| 17:00-21:00 (evening peak) | Defensive Price (default $2.00/kWh) | Peak demand window -- highest spike probability |
+| All other hours | Fallback Price (default $0.30/kWh) | Conservative hold -- typical off-peak rate |
+
+Both the **Defensive Price** (`number.victron_mpc_battery_optimizer_defensive_price`) and **Fallback Price** (options flow) are configurable. The **Amber Blip Minutes** threshold controls how long the integration waits before switching to defensive mode, allowing brief Amber glitches to resolve without triggering unnecessary defensive discharge.
 
 This means that during an Amber outage:
-- **Evening**: The optimizer sees $2.00 prices and discharges the battery to power loads, avoiding potential grid import at spike rates
-- **Off-peak**: The optimizer holds conservatively, preserving battery for the next potential peak
+- **Evening**: The optimizer sees the defensive price and discharges the battery to power loads, avoiding potential grid import at spike rates
+- **Off-peak**: The optimizer holds conservatively at the fallback price, preserving battery for the next potential peak
 - **Recovery**: When Amber comes back online, the integration immediately returns to real pricing
 
-A persistent notification alerts you when Amber has been down for more than 5 minutes.
+A persistent notification alerts you when Amber has been down for more than the configured blip tolerance.
 
 ### Modbus Health Monitoring
 

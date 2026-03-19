@@ -97,6 +97,64 @@ Safety margin applied to all load forecasts. Prevents the optimizer from underes
 
 ---
 
+## Safety & Override Thresholds
+
+These control when the integration bypasses the LP optimizer and applies hard safety overrides. All are adjustable from the HA UI as number entities.
+
+### Spike Threshold -- Default: $1.00
+
+**Entity**: `number.victron_mpc_battery_optimizer_spike_threshold`
+
+Price above which the override logic forces immediate discharge (R2901=100). This bypasses the LP entirely.
+
+| Value | Effect |
+|-------|--------|
+| Lower ($0.50) | More aggressive -- treats anything above $0.50 as a spike |
+| Higher ($2.00) | Only discharges during extreme spikes |
+
+**Range**: $0.50 - $5.00
+
+### Defensive Price -- Default: $2.00
+
+**Entity**: `number.victron_mpc_battery_optimizer_defensive_price`
+
+The assumed buy price during evening peak hours (17:00-21:00) when the Amber API is unavailable. The optimizer uses this to decide whether to discharge defensively during an Amber outage.
+
+| Value | Effect |
+|-------|--------|
+| Lower ($1.00) | Less aggressive defensive discharge |
+| Higher ($3.00) | Stronger defensive discharge -- assumes worse spike risk |
+
+**Range**: $0.50 - $5.00
+
+### Amber Blip Minutes -- Default: 5
+
+**Entity**: `number.victron_mpc_battery_optimizer_amber_blip_minutes`
+
+How many minutes of continuous Amber unavailability before defensive mode activates. Brief Amber glitches shorter than this threshold use the last known price.
+
+| Value | Effect |
+|-------|--------|
+| Lower (2 min) | Faster defensive trigger -- reacts to brief outages |
+| Higher (10 min) | More tolerant -- ignores transient Amber blips |
+
+**Range**: 1 - 15 minutes
+
+### Feed-in Export Threshold -- Default: $0.10
+
+**Entity**: `number.victron_mpc_battery_optimizer_feedin_export_threshold`
+
+Minimum feed-in tariff (FIT) required to allow grid export during a spike. Prevents exporting battery at negligible FIT rates where the revenue does not justify the wear.
+
+| Value | Effect |
+|-------|--------|
+| Lower ($0.05) | Exports during spikes even at low FIT |
+| Higher ($0.20) | Only exports when FIT is substantial |
+
+**Range**: $0.01 - $0.50
+
+---
+
 ## Options Flow Tunables
 
 These are available via **Settings** > **Devices & Services** > **Victron MPC** > **Configure**:
@@ -108,6 +166,14 @@ These are available via **Settings** > **Devices & Services** > **Victron MPC** 
 | Overnight Hold Reward | $0.10 | Same as the number entity |
 | SoC Floor (%) | 20 | Same as the number entity |
 | Overnight Minimum SoC (%) | 30 | Same as the number entity |
+| Spike Threshold | $1.00 | Same as the number entity |
+| Defensive Price | $2.00 | Same as the number entity |
+| Amber Blip Minutes | 5 | Same as the number entity |
+| Feed-in Export Threshold | $0.10 | Same as the number entity |
+| Overnight Price Low | $0.15 | Full hold reward below this overnight price |
+| Overnight Price High | $0.25 | Zero hold reward above this overnight price |
+| Feed-in SoC Threshold | 30% | Min SoC to allow spike export |
+| Fallback Price | $0.30 | Assumed price when no data at all |
 | Shadow Mode | ON | Log decisions without writing registers |
 
 Changes made in the Options flow are immediately reflected in the corresponding number/switch entities, and vice versa.
@@ -126,6 +192,10 @@ All tunables are clamped to safe ranges to prevent misconfiguration:
 | SoC Floor | 15 | 30 | 1 | % |
 | Overnight Min SoC | 20 | 45 | 1 | % |
 | Load Inflation | 5 | 25 | 1 | % |
+| Spike Threshold | 0.50 | 5.00 | 0.10 | $/kWh |
+| Defensive Price | 0.50 | 5.00 | 0.10 | $/kWh |
+| Amber Blip Minutes | 1 | 15 | 1 | min |
+| Feed-in Export Threshold | 0.01 | 0.50 | 0.01 | $/kWh |
 
 ---
 
@@ -160,6 +230,25 @@ Check the Decision sensor's `buy_price_actual` attribute to see what overnight p
 1. Check if Solcast is available -- if `solar_forecast_source` is `solcast_ha`, the forecast should be well-calibrated. If Solcast is installed but not being used, check the Troubleshooting guide for Solcast entity issues
 2. If using VRM sources, check if the mid-day adjustment is working -- the `solar_forecast_source` should change from e.g., `clearsky_p40` to `clearsky_p70` if actual production exceeds the forecast
 3. This typically self-corrects after 10am when the mid-day adjustment fires
+
+### "Want to be more aggressive on spike discharge"
+
+1. **Lower Spike Threshold** -- reduce from $1.00 to $0.50 to trigger spike discharge at lower prices
+2. **Lower SoC Floor** -- allow deeper discharge during spikes (e.g., 20% -> 15%)
+3. Check the Decision sensor's `spike` attribute to see if spikes are being detected
+
+### "Amber goes down too often, false alarms"
+
+1. **Increase Amber Blip Minutes** -- raise from 5 to 10 or 15 minutes to tolerate longer Amber glitches before defensive mode activates
+2. Check persistent notifications for "Amber Pricing Unavailable" -- if these fire frequently for brief outages, a longer blip tolerance will reduce false triggers
+3. The defensive discharge is intentionally aggressive during evening peak (17:00-21:00) -- increasing the blip minutes gives Amber more time to recover before the integration assumes the worst
+
+### "Want higher defensive price assumption"
+
+1. **Increase Defensive Price** -- raise from $2.00 to $3.00 or higher to make defensive discharge more aggressive during Amber outages
+2. This only affects the evening peak window (17:00-21:00) when Amber is unavailable
+3. A higher value means the optimizer will discharge more battery during an Amber outage, protecting against the risk of a large undetected spike
+4. A lower value (e.g., $1.00) is appropriate if spikes in your area rarely exceed $1/kWh
 
 ### "Grid charging at too-high prices"
 
