@@ -725,13 +725,34 @@ class ForecastBuilder:
     def _maybe_adjust_day_type(self, now: datetime, day_type: str) -> str:
         """Adjust day type if actual solar yield diverges from expected.
 
-        After 10am, compares actual yield to VRM forecast using a sin^2 curve
-        to estimate what fraction should have been produced by now.
-        - If actual < 60% of expected, downgrades one level
+        Starting at 8am (was 10am), compares actual yield to VRM forecast
+        using a sin^2 curve to estimate what fraction should have been
+        produced by now.
+        - If actual < 30% of expected, downgrades one level (aggressive)
+        - If actual < 60% of expected after 10am, downgrades one level
         - If actual > 150% of expected, upgrades one level
+
+        Also checks real-time cloud layers: if current low cloud > 80%,
+        force overcast regardless of forecast classification.
         """
         current_hour_f = now.hour + now.minute / 60.0
-        if current_hour_f < 10.0:
+
+        # Cloud layer override: if we have real-time data showing
+        # heavy low stratus (>80%), immediately classify as overcast.
+        # Low cloud = thick stratus that blocks most solar.
+        cloud_override_threshold = self._tunables.cloud_override_low_pct
+        if self._cloud_layers_cache and day_type not in ("overcast", "rain"):
+            current_layers = self._cloud_layers_cache.get(0, {})
+            low_cloud = current_layers.get("low", 0)
+            if low_cloud > cloud_override_threshold:
+                _LOGGER.info(
+                    "Cloud layer override: low stratus %.0f%% -> forcing overcast "
+                    "(was %s)",
+                    low_cloud, day_type,
+                )
+                return "overcast"
+
+        if current_hour_f < self._tunables.intraday_early_hour:
             return day_type  # Too early to judge
 
         try:
@@ -752,7 +773,7 @@ class ForecastBuilder:
                 return day_type
 
             # Estimate expected yield by now using sin^2 cumulative model
-            solar_start = 8.0
+            solar_start = 6.5  # Melbourne sunrise ~6:30 in March
             solar_end = 18.5
             solar_length = solar_end - solar_start
             elapsed = min(current_hour_f - solar_start, solar_length)
@@ -760,13 +781,23 @@ class ForecastBuilder:
             cum_fraction = progress - math.sin(2 * math.pi * progress) / (2 * math.pi)
             expected_by_now = forecast_daily_kwh * cum_fraction
 
-            if expected_by_now < 1.0:
+            # Lower threshold before 10am to enable early detection
+            min_expected = 0.3 if current_hour_f < 10.0 else 1.0
+            if expected_by_now < min_expected:
                 return day_type
 
             yield_ratio = actual_yield / expected_by_now
 
             # Downgrade: actual far below expected
-            if yield_ratio < 0.60 and day_type != "rain":
+            # Before 10am, be more aggressive because early morning is
+            # when we can still save battery. After 10am, standard threshold.
+            downgrade_threshold = (
+                self._tunables.intraday_early_threshold
+                if current_hour_f < 10.0
+                else self._tunables.intraday_standard_threshold
+            )
+
+            if yield_ratio < downgrade_threshold and day_type != "rain":
                 downgrade_map = {
                     "clear": "partly_cloudy",
                     "partly_cloudy": "overcast",
@@ -775,14 +806,15 @@ class ForecastBuilder:
                 new_type = downgrade_map.get(day_type, day_type)
                 _LOGGER.info(
                     "Day type downgrade: %s -> %s "
-                    "(yield %.1f kWh vs %.1f expected = %.0f%%)",
+                    "(yield %.1f kWh vs %.1f expected = %.0f%%, "
+                    "threshold=%.0f%%)",
                     day_type, new_type, actual_yield, expected_by_now,
-                    yield_ratio * 100,
+                    yield_ratio * 100, downgrade_threshold * 100,
                 )
                 return new_type
 
             # Upgrade: actual well above expected
-            if yield_ratio > 1.50 and day_type != "clear":
+            if yield_ratio > self._tunables.intraday_upgrade_threshold and day_type != "clear":
                 upgrade_map = {
                     "rain": "overcast",
                     "overcast": "partly_cloudy",

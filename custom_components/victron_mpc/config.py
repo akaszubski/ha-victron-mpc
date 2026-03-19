@@ -102,6 +102,13 @@ class MPCTunables:
     overnight_price_low: float = 0.15  # $/kWh — full hold reward below
     overnight_price_high: float = 0.25  # $/kWh — zero hold reward above
 
+    # Intraday correction — adjust day type based on actual vs expected yield
+    intraday_early_hour: float = 8.0  # Start checking yield from this hour
+    intraday_early_threshold: float = 0.30  # Before 10am: downgrade if yield < 30%
+    intraday_standard_threshold: float = 0.60  # After 10am: downgrade if yield < 60%
+    intraday_upgrade_threshold: float = 1.50  # Upgrade if yield > 150% of expected
+    cloud_override_low_pct: float = 80.0  # Force overcast if low cloud > this %
+
     # Forecast horizon
     forecast_hours: int = 24
     dt_minutes: int = 5  # Optimization timestep

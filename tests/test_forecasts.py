@@ -1544,3 +1544,157 @@ class TestHAHistoryFallback:
 
         assert source == "bell_curve"
         assert len(solar_kw) == STEPS_24H
+
+
+# ===================================================================
+# 10. Early Intraday Correction + Cloud Layer Override Tests
+# ===================================================================
+
+
+class TestEarlyIntradayCorrection:
+    """Tests for faster day type adjustment (8am instead of 10am)."""
+
+    async def test_downgrade_at_9am_aggressive(
+        self, hass: HomeAssistant, tunables: MPCTunables,
+    ):
+        """At 9am with <30% of expected yield, downgrade immediately.
+
+        With sunrise at 6:30, by 9am the sin^2 model expects ~1.1 kWh
+        from a 20 kWh day. 0.1 kWh actual = ~9% → below 30% threshold.
+        """
+        now = datetime(2026, 3, 19, 9, 0, tzinfo=timezone(timedelta(hours=11)))
+
+        hass.states.async_set("sensor.solar_yield_today", "0.1")
+        hass.states.async_set("sensor.vrm_solar_forecast_tomorrow", "20", {
+            "forecast_today_kwh": 20,
+        })
+
+        fb = _builder(hass, tunables)
+        result = fb._maybe_adjust_day_type(now, "partly_cloudy")
+
+        assert result == "overcast"
+
+    async def test_no_downgrade_at_9am_above_threshold(
+        self, hass: HomeAssistant, tunables: MPCTunables,
+    ):
+        """At 9am with >30% of expected yield, don't downgrade."""
+        now = datetime(2026, 3, 19, 9, 0, tzinfo=timezone(timedelta(hours=11)))
+
+        # At 9am, expected ~1.1 kWh. 0.8 kWh = ~73% → above 30%
+        hass.states.async_set("sensor.solar_yield_today", "0.8")
+        hass.states.async_set("sensor.vrm_solar_forecast_tomorrow", "20", {
+            "forecast_today_kwh": 20,
+        })
+
+        fb = _builder(hass, tunables)
+        result = fb._maybe_adjust_day_type(now, "partly_cloudy")
+
+        assert result == "partly_cloudy"
+
+    async def test_no_check_before_8am(
+        self, hass: HomeAssistant, tunables: MPCTunables,
+    ):
+        """Before 8am, no adjustment regardless of yield."""
+        now = datetime(2026, 3, 19, 7, 0, tzinfo=timezone(timedelta(hours=11)))
+
+        hass.states.async_set("sensor.solar_yield_today", "0.0")
+        hass.states.async_set("sensor.vrm_solar_forecast_tomorrow", "20", {
+            "forecast_today_kwh": 20,
+        })
+
+        fb = _builder(hass, tunables)
+        result = fb._maybe_adjust_day_type(now, "clear")
+
+        assert result == "clear"  # No change before 8am
+
+    async def test_standard_downgrade_after_10am(
+        self, hass: HomeAssistant, tunables: MPCTunables,
+    ):
+        """After 10am, uses 60% threshold (standard)."""
+        now = datetime(2026, 3, 19, 11, 0, tzinfo=timezone(timedelta(hours=11)))
+
+        hass.states.async_set("sensor.solar_yield_today", "2.0")
+        hass.states.async_set("sensor.vrm_solar_forecast_tomorrow", "20", {
+            "forecast_today_kwh": 20,
+        })
+
+        fb = _builder(hass, tunables)
+        result = fb._maybe_adjust_day_type(now, "partly_cloudy")
+
+        # 2.0 kWh at 11am vs ~6 kWh expected = ~33% → below 60%
+        assert result == "overcast"
+
+
+class TestCloudLayerOverride:
+    """Tests for real-time cloud layer day type override."""
+
+    async def test_heavy_low_cloud_forces_overcast(
+        self, hass: HomeAssistant, tunables: MPCTunables,
+    ):
+        """Low stratus >80% overrides day type to overcast."""
+        now = datetime(2026, 3, 19, 9, 0, tzinfo=timezone(timedelta(hours=11)))
+
+        fb = _builder(hass, tunables)
+        # Simulate cloud layer cache with heavy low stratus
+        fb._cloud_layers_cache = {
+            0: {"low": 85, "mid": 10, "high": 0},
+        }
+
+        result = fb._maybe_adjust_day_type(now, "partly_cloudy")
+        assert result == "overcast"
+
+    async def test_heavy_low_cloud_overrides_clear(
+        self, hass: HomeAssistant, tunables: MPCTunables,
+    ):
+        """Even 'clear' classification gets overridden by heavy low cloud."""
+        now = datetime(2026, 3, 19, 9, 0, tzinfo=timezone(timedelta(hours=11)))
+
+        fb = _builder(hass, tunables)
+        fb._cloud_layers_cache = {
+            0: {"low": 90, "mid": 0, "high": 0},
+        }
+
+        result = fb._maybe_adjust_day_type(now, "clear")
+        assert result == "overcast"
+
+    async def test_no_override_when_already_overcast(
+        self, hass: HomeAssistant, tunables: MPCTunables,
+    ):
+        """Already overcast — no need to override."""
+        now = datetime(2026, 3, 19, 9, 0, tzinfo=timezone(timedelta(hours=11)))
+
+        fb = _builder(hass, tunables)
+        fb._cloud_layers_cache = {
+            0: {"low": 90, "mid": 0, "high": 0},
+        }
+
+        result = fb._maybe_adjust_day_type(now, "overcast")
+        assert result == "overcast"  # No change
+
+    async def test_no_override_with_moderate_low_cloud(
+        self, hass: HomeAssistant, tunables: MPCTunables,
+    ):
+        """Low cloud at 60% — below 80% threshold, no override."""
+        now = datetime(2026, 3, 19, 9, 0, tzinfo=timezone(timedelta(hours=11)))
+
+        fb = _builder(hass, tunables)
+        fb._cloud_layers_cache = {
+            0: {"low": 60, "mid": 20, "high": 50},
+        }
+
+        result = fb._maybe_adjust_day_type(now, "partly_cloudy")
+        assert result == "partly_cloudy"  # Not enough low cloud
+
+    async def test_high_cloud_only_no_override(
+        self, hass: HomeAssistant, tunables: MPCTunables,
+    ):
+        """100% high cirrus but low cloud = 0 — no override."""
+        now = datetime(2026, 3, 19, 9, 0, tzinfo=timezone(timedelta(hours=11)))
+
+        fb = _builder(hass, tunables)
+        fb._cloud_layers_cache = {
+            0: {"low": 0, "mid": 0, "high": 100},
+        }
+
+        result = fb._maybe_adjust_day_type(now, "clear")
+        assert result == "clear"  # Cirrus doesn't block solar
