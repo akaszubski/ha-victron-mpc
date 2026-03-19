@@ -331,21 +331,28 @@ def _build_output(result, inputs: OptInput, solve_ms: float) -> OptOutput:
         # Grid charge mode — optimizer explicitly plans grid import above load.
         # Set register ABOVE current SoC to force ESS to charge from grid.
         target_register = _soc_to_register(target_soc_pct)
-    else:
-        # Solar charge, discharge, or hold — ALL non-grid-charge modes.
-        # Set register to the HARD FLOOR (soc_min), not the trajectory.
-        #
-        # CRITICAL: The Victron ESS imports from grid whenever register >= SoC.
-        # Even register = SoC triggers "maintain" mode which pulls from grid
-        # to compensate for load. Only register << SoC prevents grid import.
-        #
-        # The ESS will:
-        # - Discharge to cover loads (solar_charge surplus or battery discharge)
-        # - Accept solar charging naturally when solar > load
-        # - Stop discharging when SoC hits the floor
-        # - NOT pull from grid (register << SoC)
+    elif p_charge[0] > 0.05:
+        # Solar charge — solar excess is charging battery.
+        # Set register to hard floor so ESS doesn't pull from grid.
+        # Solar charges naturally above the floor regardless of register.
         soc_floor_pct = inputs.soc_min_kwh / inputs.battery_capacity_kwh * 100
         target_register = _soc_to_register(soc_floor_pct)
+    else:
+        # Discharge or hold — use the trajectory floor MINUS a buffer.
+        #
+        # The LP plans the optimal SoC trajectory. The discharge_floor
+        # is the lowest planned SoC in the next hour. We set the register
+        # 5% BELOW this floor to prevent grid import.
+        #
+        # Why the buffer: Victron ESS treats register = SoC as "maintain
+        # by any means including grid." A 5% buffer means the ESS will
+        # discharge 5% below the LP's plan before the register stops it.
+        # The 5-min replanning cycle corrects any overshoot.
+        #
+        # Hard floor enforced: never go below soc_min (20%).
+        soc_floor_pct = inputs.soc_min_kwh / inputs.battery_capacity_kwh * 100
+        buffered_floor = max(soc_floor_pct, discharge_floor_pct - 5.0)
+        target_register = _soc_to_register(buffered_floor)
 
     # Determine mode
     mode, reason = _determine_mode(
