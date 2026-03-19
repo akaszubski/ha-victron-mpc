@@ -127,6 +127,22 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Fuel price client (PetrolSpy — free, no key)
         self._fuel_price_client = FuelPriceClient(session=session)
 
+        # Fast startup: write safe register immediately to prevent
+        # unintended grid charging during the 2-3 min until the first
+        # full optimization cycle completes. The ESS holds the last
+        # register value across HA restarts which could be high (90%+).
+        shadow_mode = self.entry.options.get("shadow_mode", True)
+        if not shadow_mode:
+            try:
+                soc_floor = int(self.entry.data.get("soc_floor_pct", 20))
+                await self._write_register(soc_floor * 10)
+                LOGGER.info(
+                    "Fast startup: R2901=%d (safe floor until first cycle)",
+                    soc_floor * 10,
+                )
+            except Exception:
+                LOGGER.warning("Fast startup register write failed")
+
         LOGGER.info("Victron MPC coordinator setup complete")
 
     async def _async_update_data(self) -> dict[str, Any]:
