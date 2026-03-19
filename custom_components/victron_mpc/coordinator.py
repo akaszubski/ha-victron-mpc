@@ -420,9 +420,13 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _check_amber_health(self) -> tuple[bool, float]:
         """Check Amber API health and return (is_available, price_to_use).
 
-        When Amber unavailable >5min:
-        - Evening peak (17:00-21:00): assume spike risk → return $2.00
-        - Other times: hold conservatively → return $0.30
+        When Amber unavailable >5min, ALWAYS assume spike risk and return
+        a high price ($2.00) to force discharge. The cost of discharging
+        unnecessarily ($0.05/kWh wear) is trivial compared to staying on
+        grid during a $20/kWh spike.
+
+        Spikes can happen at ANY time — morning demand events, grid
+        failures, transmission constraints — not just evening peak.
 
         Returns:
             Tuple of (is_available, effective_buy_price).
@@ -445,14 +449,11 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # Brief blip — use last known price
                 return (False, self._last_known_buy_price)
 
-            # Extended outage — defensive pricing based on time of day
-            hour = now.hour
-            if 17 <= hour < 21:
-                # Evening peak: assume spike risk
-                return (False, 2.00)
-            else:
-                # Off-peak: conservative hold
-                return (False, 0.30)
+            # Extended outage — ALWAYS assume spike risk.
+            # At $20/kWh, even 30 min on grid at 1kW = $10 loss.
+            # Battery wear from defensive discharge = $0.05/kWh = negligible.
+            # Asymmetric risk: always better to discharge than risk a spike.
+            return (False, 2.00)
 
         # Amber is available
         self._amber_unavailable_since = None
