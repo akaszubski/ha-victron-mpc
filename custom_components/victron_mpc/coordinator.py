@@ -355,6 +355,24 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._consecutive_failures = 0
 
             # ----------------------------------------------------------
+            # Phase 7b: Reality check — verify grid matches intent
+            # ----------------------------------------------------------
+            grid_import_w = self._get_grid_import()
+            genset_active = self._is_genset_active()
+
+            if mode != "grid_charge" and grid_import_w > 200 and not genset_active:
+                LOGGER.warning(
+                    "GRID IMPORT ANOMALY: mode=%s but grid importing %dW "
+                    "(register=%d, SoC=%.0f%%). Check register logic.",
+                    mode, grid_import_w, target_register, soc_pct,
+                )
+
+            if genset_active:
+                LOGGER.info(
+                    "Genset active — AC Input 2 running, grid unavailable"
+                )
+
+            # ----------------------------------------------------------
             # Phase 8: Build data dict for sensor entities
             # ----------------------------------------------------------
             return self._build_sensor_data(
@@ -475,6 +493,44 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # ------------------------------------------------------------------
     # Override helpers
     # ------------------------------------------------------------------
+
+    def _get_grid_import(self) -> float:
+        """Read real-time grid import power (W) from Victron."""
+        state = self.hass.states.get("sensor.victron_grid_import")
+        if state and state.state not in ("unknown", "unavailable"):
+            try:
+                return float(state.state)
+            except (ValueError, TypeError):
+                pass
+        # Fallback to grid_power (positive = import)
+        state = self.hass.states.get(
+            self._get_entity_map().get("grid_power", "sensor.victron_grid_power")
+        )
+        if state and state.state not in ("unknown", "unavailable"):
+            try:
+                return max(0, float(state.state))
+            except (ValueError, TypeError):
+                pass
+        return 0.0
+
+    def _is_genset_active(self) -> bool:
+        """Check if genset is running (AC Input 2).
+
+        When genset is active, grid is unavailable — Amber prices are
+        irrelevant and cost should use genset $/kWh instead.
+        """
+        entities = self._get_entity_map()
+        # Check dedicated genset active sensor
+        state = self.hass.states.get(
+            entities.get("genset_active", "sensor.victron_genset_active")
+        )
+        if state and state.state == "1":
+            return True
+        # Also check active input source (1=Grid, 2=Genset)
+        state = self.hass.states.get("sensor.victron_active_input_source")
+        if state and state.state == "2":
+            return True
+        return False
 
     def _is_spike_active(self) -> bool:
         """Check if Amber spike is currently active."""
@@ -763,6 +819,9 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "battery_soc_pct": soc_pct,
                 "current_solar_w": forecasts["current_solar_w"],
                 "current_load_w": forecasts["current_load_w"],
+                "grid_import_w": self._get_grid_import(),
+                "genset_active": self._is_genset_active(),
+                "input_source": "genset" if self._is_genset_active() else "grid",
                 "schedule_30min": json.dumps(schedule_30min[:16]),
                 **soc_lookahead,
             },
