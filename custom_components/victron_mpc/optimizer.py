@@ -331,20 +331,21 @@ def _build_output(result, inputs: OptInput, solve_ms: float) -> OptOutput:
         # Grid charge mode — optimizer explicitly plans grid import above load.
         # Set register ABOVE current SoC to force ESS to charge from grid.
         target_register = _soc_to_register(target_soc_pct)
-    elif p_charge[0] > 0.05:
-        # Solar charge — battery charging from solar excess.
+    else:
+        # Solar charge, discharge, or hold — ALL non-grid-charge modes.
         # Set register to the HARD FLOOR (soc_min), not the trajectory.
-        # The ESS charges naturally from solar when production > load.
-        # Register must be well below current SoC to prevent grid import.
         #
         # CRITICAL: The Victron ESS imports from grid whenever register >= SoC.
         # Even register = SoC triggers "maintain" mode which pulls from grid
-        # to compensate for load. Only register << SoC gives true solar-only.
+        # to compensate for load. Only register << SoC prevents grid import.
+        #
+        # The ESS will:
+        # - Discharge to cover loads (solar_charge surplus or battery discharge)
+        # - Accept solar charging naturally when solar > load
+        # - Stop discharging when SoC hits the floor
+        # - NOT pull from grid (register << SoC)
         soc_floor_pct = inputs.soc_min_kwh / inputs.battery_capacity_kwh * 100
         target_register = _soc_to_register(soc_floor_pct)
-    else:
-        # Discharge or hold — set register to the discharge floor.
-        target_register = _soc_to_register(discharge_floor_pct)
 
     # Determine mode
     mode, reason = _determine_mode(
