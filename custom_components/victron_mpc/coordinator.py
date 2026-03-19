@@ -292,22 +292,14 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     )
                     # Send notification if we haven't already for this outage
                     if not self._api_health["amber"]["alerted"]:
-                        try:
-                            await self.hass.services.async_call(
-                                "persistent_notification",
-                                "create",
-                                {
-                                    "title": "MPC: Amber Pricing Unavailable",
-                                    "message": (
-                                        f"Amber API down for {minutes_down:.0f} min. "
-                                        "MPC operating in defensive mode."
-                                    ),
-                                    "notification_id": "mpc_amber_down",
-                                },
-                            )
-                            self._api_health["amber"]["alerted"] = True
-                        except Exception:
-                            pass
+                        await self._notify(
+                            "MPC: Amber Pricing Unavailable",
+                            f"Amber API down for {minutes_down:.0f} min. "
+                            f"MPC operating in defensive mode "
+                            f"(assuming ${buy_price_now:.2f}/kWh).",
+                            notification_id="mpc_amber_down",
+                        )
+                        self._api_health["amber"]["alerted"] = True
 
             if amber_available:
                 buy_price_now = forecasts["buy_price"][0]
@@ -379,14 +371,38 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if mode != "grid_charge" and grid_import_w > 200 and not genset_active:
                 LOGGER.warning(
                     "GRID IMPORT ANOMALY: mode=%s but grid importing %dW "
-                    "(register=%d, SoC=%.0f%%). Check register logic.",
+                    "(register=%d, SoC=%.0f%%). Auto-correcting to floor.",
                     mode, grid_import_w, target_register, soc_pct,
+                )
+                # Auto-correct: force register to hard floor to stop grid import
+                floor_register = int(
+                    max(tunables.soc_floor_pct, system.soc_min_pct) * 10
+                )
+                if not shadow_mode:
+                    await self._write_register(floor_register)
+                    target_register = floor_register
+                    LOGGER.info(
+                        "Auto-corrected R2901 to %d (floor) to stop grid import",
+                        floor_register,
+                    )
+                # Notify
+                await self._notify(
+                    "MPC: Grid Import Anomaly",
+                    f"Grid importing {grid_import_w:.0f}W during {mode} mode. "
+                    f"Auto-corrected register from {target_register} to {floor_register}. "
+                    f"SoC={soc_pct:.0f}%, Solar={forecasts['current_solar_w']:.0f}W.",
+                    notification_id="mpc_grid_anomaly",
                 )
 
             if genset_active:
                 LOGGER.info(
                     "Genset active — AC Input 2 running, grid unavailable"
                 )
+
+            # ----------------------------------------------------------
+            # Phase 7c: Guard against YAML automation re-enablement
+            # ----------------------------------------------------------
+            await self._check_yaml_automations()
 
             # ----------------------------------------------------------
             # Phase 8: Build data dict for sensor entities
@@ -626,21 +642,12 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _modbus_write_success(self) -> None:
         """Handle a successful Modbus write — reset failure tracking."""
         if self._modbus_consecutive_failures > 2 and self._modbus_alerted:
-            try:
-                await self.hass.services.async_call(
-                    "persistent_notification",
-                    "create",
-                    {
-                        "title": "MPC: Modbus Communication Restored",
-                        "message": (
-                            "Victron Cerbo GX communication restored. "
-                            "Registers updating normally."
-                        ),
-                        "notification_id": "mpc_modbus_down",
-                    },
-                )
-            except Exception:
-                pass
+            await self._notify(
+                "MPC: Modbus Communication Restored",
+                "Victron Cerbo GX communication restored. "
+                "Registers updating normally.",
+                notification_id="mpc_modbus_down",
+            )
         self._modbus_consecutive_failures = 0
         self._modbus_alerted = False
         self._modbus_last_success = datetime.now()
@@ -649,23 +656,98 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Handle a failed Modbus write — increment counter, alert if needed."""
         self._modbus_consecutive_failures += 1
         if self._modbus_consecutive_failures >= 3 and not self._modbus_alerted:
+            await self._notify(
+                "MPC: Modbus Communication Failed",
+                f"Cannot write to Victron Cerbo GX. "
+                f"{self._modbus_consecutive_failures} consecutive failures. "
+                f"Registers are NOT being updated. Check Cerbo network.",
+                notification_id="mpc_modbus_down",
+            )
+            self._modbus_alerted = True
+
+    # ------------------------------------------------------------------
+    # Notifications
+    # ------------------------------------------------------------------
+
+    async def _notify(
+        self, title: str, message: str, notification_id: str | None = None,
+    ) -> None:
+        """Send push notification to configured devices + persistent notification.
+
+        Sends to both notify.mobile_app_ak_iphone and persistent_notification
+        so the user sees it on phone AND in HA dashboard.
+        """
+        # Persistent notification (always visible in HA)
+        try:
+            data: dict[str, str] = {"title": title, "message": message}
+            if notification_id:
+                data["notification_id"] = notification_id
+            await self.hass.services.async_call(
+                "persistent_notification", "create", data,
+            )
+        except Exception:
+            pass
+
+        # Mobile push notification
+        for target in ("notify.mobile_app_ak_iphone", "notify.mobile_app_skiphone"):
             try:
                 await self.hass.services.async_call(
-                    "persistent_notification",
-                    "create",
-                    {
-                        "title": "MPC: Modbus Communication Failed",
-                        "message": (
-                            f"Cannot write to Victron Cerbo GX. "
-                            f"{self._modbus_consecutive_failures} consecutive "
-                            f"failures. Registers are NOT being updated."
-                        ),
-                        "notification_id": "mpc_modbus_down",
-                    },
+                    target.split(".")[0],
+                    target.split(".")[1],
+                    {"title": title, "message": message},
                 )
-                self._modbus_alerted = True
             except Exception:
-                pass
+                pass  # Service may not exist
+
+    # ------------------------------------------------------------------
+    # YAML automation guard
+    # ------------------------------------------------------------------
+
+    async def _check_yaml_automations(self) -> None:
+        """Detect and disable any re-enabled MPC YAML automations.
+
+        The old YAML automations (mpc_write_battery_register etc.) must
+        stay OFF — if someone re-enables one in the HA UI, it will override
+        HACS register writes and cause unintended grid charging.
+        """
+        mpc_automations = [
+            "automation.mpc_write_battery_register",
+            "automation.mpc_data_stale",
+            "automation.mpc_solver_failure",
+            "automation.mpc_shadow_delta_large",
+            "automation.mpc_kill_switch",
+            "automation.mpc_register_writer",
+            "automation.mpc_grid_feed_in_control",
+            "automation.mpc_stale_data_safety",
+            "automation.mpc_amber_api_down",
+            "automation.mpc_amber_api_recovered",
+            "automation.mpc_vrm_api_down",
+            "automation.mpc_vrm_api_recovered",
+            "automation.mpc_solar_forecast_fallback_active",
+        ]
+
+        for auto_id in mpc_automations:
+            state = self.hass.states.get(auto_id)
+            if state and state.state == "on":
+                LOGGER.warning(
+                    "YAML automation %s is ON — disabling to prevent "
+                    "register conflicts with HACS integration",
+                    auto_id,
+                )
+                try:
+                    await self.hass.services.async_call(
+                        "automation", "turn_off",
+                        {"entity_id": auto_id},
+                    )
+                except Exception:
+                    pass
+                await self._notify(
+                    "MPC: YAML Automation Conflict",
+                    f"{auto_id} was re-enabled and has been automatically "
+                    f"disabled. These automations conflict with the HACS "
+                    f"integration's register writes.",
+                    notification_id="mpc_yaml_conflict",
+                )
 
     # ------------------------------------------------------------------
     # Cell balancing
