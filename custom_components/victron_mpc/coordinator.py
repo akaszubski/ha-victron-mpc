@@ -95,6 +95,11 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._amber_unavailable_since: datetime | None = None
         self._last_known_buy_price: float = 0.30  # Updated from tunables each cycle
 
+        # Amber forecast accuracy tracking — rolling 7-day log
+        # Each entry: {timestamp, forecast_prices: {+1h, +2h, +3h, +6h}, actual_price, spike_predicted, spike_actual}
+        self._amber_forecast_log: list[dict[str, Any]] = []
+        self._amber_forecast_log_max = 2016  # 7 days × 288 cycles/day
+
     async def _async_setup(self) -> None:
         """One-time setup called during first refresh (HA 2024.8+).
 
@@ -405,6 +410,11 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self._check_yaml_automations()
 
             # ----------------------------------------------------------
+            # Phase 7d: Log Amber forecast for accuracy tracking
+            # ----------------------------------------------------------
+            self._log_amber_forecast(forecasts)
+
+            # ----------------------------------------------------------
             # Phase 8: Build data dict for sensor entities
             # ----------------------------------------------------------
             return self._build_sensor_data(
@@ -703,6 +713,58 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # YAML automation guard
     # ------------------------------------------------------------------
 
+    def _log_amber_forecast(self, forecasts: dict[str, Any]) -> None:
+        """Log current Amber forecast vs actual for accuracy tracking.
+
+        Stores what Amber predicts for +1h, +2h, +3h, +6h alongside
+        the current actual price. After 7 days, this data reveals
+        systematic forecast biases by time of day.
+        """
+        try:
+            entities = self._get_entity_map()
+            amber_state = self.hass.states.get(
+                entities.get("amber_price", "sensor.amber_general_price")
+            )
+            if not amber_state or amber_state.state in ("unavailable", "unknown"):
+                return
+
+            actual_price = float(amber_state.state)
+            spot_price = float(amber_state.attributes.get("spot_per_kwh", 0))
+            spike_actual = amber_state.attributes.get("spike_status", "none")
+
+            # Get forecast prices from the forecast entity
+            forecast_state = self.hass.states.get(
+                entities.get("amber_forecast", "sensor.amber_general_forecast")
+            )
+            forecast_prices = {}
+            if forecast_state:
+                fc_list = forecast_state.attributes.get("forecasts", [])
+                # Extract prices at +1h, +2h, +3h, +6h offsets
+                for offset_idx, label in [(2, "+1h"), (4, "+2h"), (6, "+3h"), (12, "+6h")]:
+                    if offset_idx < len(fc_list):
+                        forecast_prices[label] = fc_list[offset_idx].get("per_kwh", 0)
+                        forecast_prices[f"{label}_spike"] = fc_list[offset_idx].get("spike_status", "none")
+
+            now = datetime.now()
+            entry = {
+                "timestamp": now.isoformat(),
+                "hour": now.hour,
+                "actual_buy": actual_price,
+                "actual_spot": spot_price,
+                "margin": round(actual_price - spot_price, 4),
+                "spike_actual": spike_actual,
+                **forecast_prices,
+            }
+
+            self._amber_forecast_log.append(entry)
+
+            # Trim to max size
+            if len(self._amber_forecast_log) > self._amber_forecast_log_max:
+                self._amber_forecast_log = self._amber_forecast_log[-self._amber_forecast_log_max:]
+
+        except Exception:
+            pass  # Never crash the coordinator for logging
+
     async def _check_yaml_automations(self) -> None:
         """Detect and disable any re-enabled MPC YAML automations.
 
@@ -968,6 +1030,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "spike_active": is_spike,
             "modbus_healthy": self.modbus_healthy,
             "modbus_failures": self._modbus_consecutive_failures,
+            "amber_forecast_log_entries": len(self._amber_forecast_log),
         }
 
     # ------------------------------------------------------------------
