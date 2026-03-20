@@ -63,6 +63,7 @@ All entities are grouped under a single **Victron MPC Battery Optimizer** device
 | `current_load_w` | float | Current household load in watts |
 | `schedule_30min` | string | JSON array of 30-min SoC/price schedule for dashboard |
 | `soc_1h_pct` through `soc_4h_pct` | float | Planned SoC trajectory |
+| `amber_forecast_log` | string | JSON array of rolling 7-day Amber forecast accuracy data (2016 entries). Each entry: actual_price, spot_price, margin, forecast_1h/2h/3h/6h, spike_predicted, spike_actual. Use to identify systematic forecast biases by time of day. |
 
 ### Effective Price
 
@@ -215,7 +216,7 @@ All decision thresholds are configurable via the UI -- no hardcoded values remai
 
 | Entity ID | Name | Min | Max | Step | Unit | Default | Mode |
 |-----------|------|-----|-----|------|------|---------|------|
-| `number.…_soc_floor` | SoC Floor | 15 | 30 | 1 | % | 20 | Slider |
+| `number.…_soc_floor` | SoC Floor | 15 | 30 | 1 | % | 30 | Slider |
 | `number.…_overnight_min_soc` | Overnight Min SoC | 20 | 45 | 1 | % | 30 | Slider |
 
 ### Load Forecast

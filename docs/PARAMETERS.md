@@ -67,7 +67,7 @@ Hard limits on battery state of charge. These become inequality constraints in t
 
 | Field | Default | Range | Unit | Where Set | Used In | Effect | Example |
 |-------|---------|-------|------|-----------|---------|--------|---------|
-| `soc_floor_pct` | 20.0 | 15-30 | % | Number Entity `mpc_soc_floor` | `coordinator.py` (daytime_min_kwh), `optimizer.py` (soc_min_schedule lower bound) | Minimum daytime SoC. The LP cannot plan below this. Provides a user-configurable comfort margin above the hardware minimum. **Increase**: more emergency reserve, less usable capacity. **Decrease**: more usable capacity, less safety margin. | At 20% floor on 14.2 kWh, the optimizer has 14.2 - 2.84 = 11.36 kWh of usable range. At 30%, only 9.94 kWh is usable. |
+| `soc_floor_pct` | 30.0 | 15-30 | % | Number Entity `mpc_soc_floor` | `coordinator.py` (daytime_min_kwh), `optimizer.py` (soc_min_schedule lower bound) | Minimum daytime operating SoC. The LP cannot plan below this. This is the OPERATING floor, not the hardware floor (10%) or genset trigger (~15-20%). At 30% on a 14.2 kWh battery, keeps ~4.3 kWh (1.4 kWh above hardware minimum) as emergency reserve at all times. Grid-down exception: Victron ESS handles islanding independently, genset auto-starts. **Increase**: more emergency reserve, less usable capacity. **Decrease**: more usable capacity, less safety margin. | At 30% floor on 14.2 kWh, the optimizer has 14.2 - 4.26 = 9.94 kWh of usable range. |
 | `overnight_min_soc_pct` | 30.0 | 20-45 | % | Number Entity `mpc_overnight_min_soc` | `coordinator.py` (overnight_min_kwh, soc_min_schedule), `optimizer.py` (per-step SoC floor) | Hard floor during overnight hours (22:00-06:00). Prevents the battery from being drained below this level overnight, even if prices would justify it. Always >= `soc_floor_pct`. **Increase**: more overnight safety, less ability to discharge during evening peak. **Decrease**: allows deeper evening discharge. | At 30% overnight floor, 4.26 kWh is reserved. If a price spike at 23:00 occurs, the optimizer discharges to 30% and no further. A hot night with AC running at 2 kW will hit this floor in ~4 hours. |
 
 ---
@@ -222,7 +222,7 @@ These are fixed values used by the integration. They are not user-configurable b
 
 | Constant | Value | Description |
 |----------|-------|-------------|
-| `REGISTER_ESS_MIN_SOC` | 2901 | Victron Modbus register for ESS minimum SoC. Value = SoC% x 10, range 100-1000. **Critical**: When register >= current SoC, ESS charges from grid. When register < current SoC, battery discharges freely down to register value. For non-grid-charge modes, always set BELOW current SoC. |
+| `REGISTER_ESS_MIN_SOC` | 2901 | Victron Modbus register for ESS minimum SoC. Value = SoC% x 10, range 100-1000. **Critical**: When register >= current SoC, ESS charges from grid. When register < current SoC, battery discharges freely down to register value. Register logic by mode: `grid_charge` = target SoC (above current), `solar_charge` = hard floor 300 (30%), `discharge`/`hold` = LP trajectory floor - 5% buffer (prevents grid import from register being too close to SoC). |
 | `REGISTER_MAX_FEED_IN` | 2706 | Victron Modbus register for maximum grid feed-in power. Units = 100W/value (70 = 7000W). |
 | `REGISTER_ESS_MIN` | 100 | Minimum valid R2901 value (10% SoC). |
 | `REGISTER_ESS_MAX` | 1000 | Maximum valid R2901 value (100% SoC). |

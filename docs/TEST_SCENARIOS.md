@@ -8,7 +8,7 @@ and combination scenarios. Use this as the regression test checklist.
 | # | Scenario | Solar Forecast | Price Forecast | Register Writes | Detection | Contingency | Status |
 |---|---|---|---|---|---|---|---|
 | 1 | All normal | Solcast + VRM cap | Amber 30h | Optimizer | - | - | COVERED |
-| 2 | Internet down | VRM cache (24h) then HA history | Amber stale, defensive discharge | Stale safety R2901=300 | Amber unavailable | Works 24h+, HA history fallback | COVERED |
+| 2 | Internet down | VRM cache (24h) then HA history | Amber stale, defensive discharge | Stale safety R2901=300 (30% floor) | Amber unavailable | Works 24h+, HA history fallback | COVERED |
 | 3 | Internet down >24h | HA history profile (7d) | Defensive pricing ($2 peak/$0.30 off) | Conservative hold 30% | Data stale sensor | HA history + defensive discharge | COVERED |
 | 4 | Grid down | Normal (if internet via 4G) | Amber irrelevant | ESS standalone | Genset auto-start | Victron native | COVERED |
 | 5 | Grid + internet down | Bell curve | No pricing | ESS standalone | Genset auto-start | Victron independent of MPC | COVERED |
@@ -33,7 +33,7 @@ and combination scenarios. Use this as the regression test checklist.
 
 | # | Scenario | Expected Behavior | Override Logic | Status |
 |---|---|---|---|---|
-| 17 | Price spike ($1-25/kWh) | R2901=100, discharge everything | `is_spike or buy > $1.0` | COVERED |
+| 17 | Price spike ($1-25/kWh) | R2901=100, discharge to hardware floor (10%) | `is_spike or buy > $1.0` | COVERED |
 | 18 | Negative pricing | R2901=1000, charge (paid to consume) | `buy_price < 0` | COVERED |
 | 19 | Spike + Amber down | Defensive discharge if 17-21h | $2.00 assumed during peak | COVERED |
 | 20 | Spike + internet down | Defensive discharge if 17-21h | $2.00 assumed during peak | COVERED |
@@ -60,7 +60,7 @@ and combination scenarios. Use this as the regression test checklist.
 | 31 | Clear day, good solar | Charge to 100% | Solcast + VRM P90 envelope cap | COVERED |
 | 32 | Cloudy day | Low production forecast | Solcast satellite sees cloud | COVERED |
 | 33 | Partly cloudy, variable | Variable production | Cloud layers update 30min | COVERED |
-| 34 | Solcast over-forecast (clear) | Raw 35kWh capped to ~20kWh (Solcast over-forecasts ~2x for shaded sites) | VRM P90 per-hour per-month envelope ALWAYS applied | COVERED |
+| 34 | Solcast over-forecast (clear) | Raw 35kWh shaped to ~20kWh via three-layer architecture (coefficient ~0.65 March + hourly mask) | Three-layer: Solcast shape x VRM coefficient x VRM hourly mask | COVERED |
 | 35 | Morning shade, afternoon sun | Per-hour shading pattern | VRM P90 per-hour per-month | COVERED |
 | 36 | Unexpected rain mid-day | Intraday correction | _maybe_adjust_day_type downgrades | COVERED |
 | 37 | Weather entity unavailable | Can't classify day type | Default partly_cloudy | DEGRADED |
@@ -74,7 +74,7 @@ and combination scenarios. Use this as the regression test checklist.
 | 40 | Solver fails (infeasible) | Conservative hold | _build_fallback | COVERED |
 | 41 | Solver slow (>2s) | Delayed decision | Completes in executor, logged | COVERED |
 | 42 | Two MPC instances writing | Register conflicts | YAML automations disabled (initial_state: false) | COVERED |
-| 43 | Mac runner still running | Pushes stale sensors | Harmless, automations off (initial_state: false prevents re-enable on restart) | COVERED |
+| 43 | Mac runner (legacy) | Runner permanently stopped, launchctl unloaded | All 12 YAML automations have initial_state: false; HACS is sole controller | COVERED |
 
 ## Combination Scenarios (Multi-Failure)
 

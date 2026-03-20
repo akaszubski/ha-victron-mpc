@@ -40,10 +40,13 @@ Solcast provides the most accurate solar forecasts by using satellite imagery ca
 4. Go to **Settings** > **Devices & Services** > **Add Integration** > **Solcast PV Forecast**
 5. Enter your Solcast API key (get a free hobbyist account at [solcast.com](https://solcast.com/) -- 10 API calls/day)
 6. Configure your rooftop(s) in the Solcast dashboard (panel orientation, tilt, location)
+7. **Set update mode to DAYLIGHT** (`auto_update: 1` in the Solcast integration config). This spreads 10 API calls across sunrise-to-sunset hours, maximizing forecast freshness during solar production hours. Quota resets at local midnight.
 
 After setup, verify the entity `sensor.solcast_pv_forecast_forecast_today` exists and has a `detailedForecast` attribute with 30-minute power values.
 
-**Note on shading**: Solcast's satellite imagery cannot see ground-level obstructions (trees, nearby buildings). For sites with significant shading, Solcast can over-forecast by approximately 2x. The MPC integration compensates for this by always applying a VRM P90 per-hour per-month envelope cap to Solcast forecasts. This requires VRM API access to be configured for best accuracy.
+**Note on shading**: Solcast's satellite imagery cannot see ground-level obstructions (trees, nearby buildings). For sites with significant shading, Solcast can over-forecast by approximately 2x. The MPC integration compensates via the three-layer architecture: `Final = Solcast cloud shape x VRM coefficient x VRM hourly mask`. The VRM coefficient captures the site shading ratio, and the hourly mask zeros out hours where the site is physically shaded. This requires VRM API access to be configured for best accuracy.
+
+**Stale Solcast data**: If Solcast data becomes stale (>12h since last update), the forecast degrades but the VRM coefficient and hourly mask still compensate. Intraday correction (comparing actual vs forecast after 10am) further adjusts the forecast based on real production. The system tolerates stale Solcast data gracefully.
 
 ### Select in MPC Config Flow
 
@@ -88,7 +91,7 @@ The integration uses the HA Modbus integration to write registers, so ensure tha
 | Battery Capacity (kWh) | `14.2` | Total usable capacity of your battery bank |
 | Max Charge Rate (kW) | `3.5` | Maximum grid-to-battery charge rate |
 | Max Discharge Rate (kW) | `4.5` | Maximum battery-to-load discharge rate |
-| Minimum SoC Floor (%) | `20` | Lowest the optimizer will plan to discharge during the day |
+| Minimum SoC Floor (%) | `30` | Operating floor -- lowest the optimizer will plan to discharge during the day. Keeps ~4.3 kWh emergency reserve. |
 
 Set these to match your actual hardware. Undersizing charge/discharge rates is safer than oversizing. If unsure, check VRM > Advanced > Battery for observed rates.
 
@@ -216,12 +219,14 @@ data:
   hub: victron
   unit: 100
   address: 2901
-  value: 200   # 20% floor - safe default
+  value: 300   # 30% floor - safe default
 ```
 
-### YAML Automation Re-Enable on Restart
+### YAML Automation Re-Enable on Restart (Legacy)
 
-If you previously used Mac-based MPC with YAML automations (`automation.mpc_*`), those automations will re-enable themselves on every HA restart **unless** they have `initial_state: false` in the YAML source. All 12 MPC YAML automations should have `initial_state: false` added to prevent them from conflicting with the HACS integration after a restart.
+If you previously used Mac-based MPC with YAML automations (`automation.mpc_*`), those automations will re-enable themselves on every HA restart **unless** they have `initial_state: false` in the YAML source. All 12 MPC YAML automations must have `initial_state: false` added to prevent them from conflicting with the HACS integration after a restart.
+
+**Note**: The Mac runner (`com.homeassistant.mpc` launchctl service) has been permanently stopped and unloaded. The HACS integration is the sole controller. If you are setting up fresh, there are no Mac components to worry about.
 
 ### Grid Import Monitoring
 

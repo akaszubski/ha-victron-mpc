@@ -111,7 +111,12 @@ When R2901 >= current SoC, the Victron ESS interprets this as "charge the batter
 - SoC = 45%, mode = solar_charge
 - Register set to 450 (45%) -- WRONG, this equals current SoC
 - ESS sees "maintain 45%" and pulls from grid to ensure it
-- Should be: Register = 200 (20% floor), solar charges naturally
+- Should be: Register = 300 (30% floor), solar charges naturally
+
+**Register logic by mode (final version with 5% buffer):**
+- `grid_charge`: register = target SoC (above current, forces grid charge)
+- `solar_charge`: register = hard floor 300 (30%), solar charges naturally
+- `discharge`/`hold`: register = LP trajectory floor - 5% buffer. The LP controls discharge rate; the 5% buffer ensures the register stays well below current SoC to prevent grid import from measurement noise or load transients.
 
 ### How the Integration Handles This
 
@@ -134,12 +139,12 @@ If you see unexpected grid import:
      hub: victron
      unit: 100
      address: 2901
-     value: 200   # 20% floor
+     value: 300   # 30% floor
    ```
 
 ### Prevention
 
-- The integration enforces: for solar_charge/hold/discharge, register = configured SoC floor (default 200 = 20%)
+- The integration enforces mode-specific register logic: solar_charge = hard floor 300 (30%), discharge/hold = LP trajectory floor - 5% buffer
 - Only grid_charge mode sets the register above current SoC
 - Always cross-check optimizer decisions against `sensor.victron_grid_import`
 - Never trust mode labels without verifying actual hardware readings
@@ -335,14 +340,15 @@ If `solar_forecast_source` never shows `solcast_ha` even though you installed ha
 3. **Verify the attribute**: The entity must have a `detailedForecast` attribute containing an array of 30-minute forecast entries with `pv_estimate` fields
 4. **Restart HA**: After installing ha-solcast-solar, a full HA restart is required for the entity to become available
 
-### Solcast Rate Limits
+### Solcast Rate Limits and API Management
 
-The free Solcast hobbyist account allows 10 API calls per day. If you exceed this:
+The free Solcast hobbyist account allows 10 API calls per day. The recommended configuration is **DAYLIGHT mode** (`auto_update: 1` in ha-solcast-solar), which spreads 10 calls across sunrise-to-sunset hours. Quota resets at local midnight.
 
-- Solcast data goes stale (last successful fetch continues to be used until midnight)
-- MPC automatically falls through to VRM-based forecasting when Solcast data is too old
-- The `solar_forecast_source` attribute will change from `solcast_ha` to a VRM source
-- Consider spacing Solcast update automations to every 2-3 hours (4-6 calls during daylight covers the day well)
+If Solcast data becomes stale (>12h since last update):
+- The three-layer architecture degrades gracefully: VRM coefficient and hourly mask still apply
+- Intraday correction (after 10am) adjusts based on actual production vs forecast
+- The `solar_forecast_source` attribute will change from `solcast_ha` to a VRM source if Solcast data is too old
+- MPC automatically falls through to VRM-based forecasting
 
 ### Solcast Data Looks Wrong
 
@@ -464,7 +470,7 @@ data:
   hub: victron
   unit: 100
   address: 2901
-  value: 500   # 50% - safe default
+  value: 300   # 30% - safe default (matches operating floor)
 ```
 
 ---

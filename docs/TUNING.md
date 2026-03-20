@@ -62,11 +62,11 @@ Before each optimization, the reward is scaled based on average overnight grid p
 
 ## SoC Constraints
 
-### SoC Floor -- Default: 20%
+### SoC Floor -- Default: 30%
 
 **Entity**: `number.victron_mpc_battery_optimizer_soc_floor`
 
-Daytime minimum SoC. The optimizer will not plan to discharge below this level during the day (6:00-22:00).
+Daytime minimum operating SoC. The optimizer will not plan to discharge below this level during the day (6:00-22:00). This is the OPERATING floor -- not the hardware floor (10%) or genset trigger (~15-20%). At 30% on a 14.2 kWh battery, this keeps ~4.3 kWh (1.4 kWh above the hardware minimum) as emergency reserve at all times. Grid-down exception: Victron ESS handles islanding independently, genset auto-starts.
 
 **Range**: 15% - 30%
 
@@ -164,7 +164,7 @@ These are available via **Settings** > **Devices & Services** > **Victron MPC** 
 | Battery Wear Cost | $0.05 | Same as the number entity |
 | Sunset Reward | $0.04 | Same as the number entity |
 | Overnight Hold Reward | $0.10 | Same as the number entity |
-| SoC Floor (%) | 20 | Same as the number entity |
+| SoC Floor (%) | 30 | Same as the number entity |
 | Overnight Minimum SoC (%) | 30 | Same as the number entity |
 | Spike Threshold | $1.00 | Same as the number entity |
 | Defensive Price | $2.00 | Same as the number entity |
@@ -203,7 +203,7 @@ All tunables are clamped to safe ranges to prevent misconfiguration:
 
 ### "Battery draining overnight too much"
 
-1. **Increase Overnight Min SoC** -- raise the hard floor (e.g., 30% -> 35%)
+1. **Increase Overnight Min SoC** -- raise the hard floor (e.g., 30% -> 40%)
 2. **Increase Overnight Hold Reward** -- raise the maximum (e.g., $0.10 -> $0.15) to hold more aggressively at moderate prices
 3. **Increase Load Inflation** -- the optimizer may be underestimating overnight load
 
@@ -212,7 +212,7 @@ Check the Decision sensor's `buy_price_actual` attribute to see what overnight p
 ### "Not using battery enough during expensive periods"
 
 1. **Decrease Battery Wear Cost** -- reduce the cycling penalty (e.g., $0.05 -> $0.03) to allow more liberal discharge
-2. **Decrease SoC Floor** -- allow deeper discharge (e.g., 20% -> 15%)
+2. **Decrease SoC Floor** -- allow deeper discharge (e.g., 30% -> 20%)
 3. Check the Battery Plan sensor's `mode` -- if it says `hold` when prices are high, the wear cost is likely too high relative to the price differential
 
 ### "Solar forecast too optimistic"
@@ -225,7 +225,7 @@ Check the Decision sensor's `buy_price_actual` attribute to see what overnight p
 
 **Note**: If you have Solcast installed, cloud layer tuning is less critical for solar forecasting because Solcast already accounts for clouds, shading, and panel orientation in its satellite-based model. The cloud coverage sensor and Open-Meteo data still update for dashboard display and day-type classification.
 
-**Important**: Solcast can over-forecast by approximately 2x for sites with significant shading (trees, nearby buildings). The integration always applies a VRM P90 per-hour per-month envelope cap to Solcast forecasts to correct for this. The VRM envelope captures your site's actual shading patterns from 180 days of production history grouped by month. If VRM data is unavailable, a warning is logged because the Solcast forecast may be significantly over-optimistic.
+**Three-layer architecture**: Solcast forecasts are processed through three layers: `Final = Solcast cloud shape x VRM coefficient x VRM hourly mask`. The VRM coefficient captures the site shading ratio (~0.65 in March, ~0.80 in summer, ~0.45 in winter), derived from `VRM_best_day / Solcast_clear_sky`. The VRM hourly mask zeros hours where VRM P90 < 0.2 kW (morning/evening shaded) and caps partially shaded hours at VRM P90. If VRM data is unavailable, a warning is logged because the forecast may be significantly over-optimistic.
 
 ### "Solar forecast too pessimistic"
 
@@ -236,7 +236,7 @@ Check the Decision sensor's `buy_price_actual` attribute to see what overnight p
 ### "Want to be more aggressive on spike discharge"
 
 1. **Lower Spike Threshold** -- reduce from $1.00 to $0.50 to trigger spike discharge at lower prices
-2. **Lower SoC Floor** -- allow deeper discharge during spikes (e.g., 20% -> 15%)
+2. **Lower SoC Floor** -- allow deeper discharge during spikes (e.g., 30% -> 20%)
 3. Check the Decision sensor's `spike` attribute to see if spikes are being detected
 
 ### "Amber goes down too often, false alarms"

@@ -24,7 +24,7 @@ Typical savings are 20-40% on electricity costs compared to a fixed SoC strategy
 - **LP-optimized dispatch** -- 288-step (5-min) rolling horizon via scipy HiGHS solver (~50ms per solve)
 - **Amber Electric integration** -- wholesale buy/sell pricing, 30h forecast, spike detection
 - **Direct Modbus writes** -- R2901 (ESS min SoC) and R2706 (max grid feed-in) via Victron Cerbo GX
-- **Solcast solar forecast** -- auto-detects [ha-solcast-solar](https://github.com/BJReplay/ha-solcast-solar) for satellite-based rooftop forecasts (optional, highest priority), always capped by VRM P90 per-hour shading envelope
+- **Three-layer solar forecast** -- `Final = Solcast cloud shape x VRM coefficient x VRM hourly mask`. Solcast provides cloud-aware shape, VRM coefficient captures site shading ratio (~0.65 March), VRM mask zeros shaded hours. Auto-detects [ha-solcast-solar](https://github.com/BJReplay/ha-solcast-solar) (optional). Tomorrow stitching appends next-day forecast after sunset for overnight LP planning.
 - **Weather-classified solar forecast** -- VRM historical percentiles (P90/P70/P40/P15) selected by day type
 - **Cloud layer derating** -- Open-Meteo low/mid/high altitude cloud weighting for accurate solar adjustment
 - **Override safety** -- automatic spike discharge, negative pricing charge, stale data fallback
@@ -115,7 +115,7 @@ All decision thresholds are configurable -- no hardcoded values in the logic.
 | `number.victron_mpc_battery_optimizer_battery_wear_cost` | Battery Wear Cost | $0.01-0.10/kWh | $0.05 | Penalty for battery cycling |
 | `number.victron_mpc_battery_optimizer_sunset_reward` | Sunset Reward | $0.01-0.10/kWh | $0.04 | Incentive for full battery at sunset |
 | `number.victron_mpc_battery_optimizer_overnight_hold_reward` | Overnight Hold Reward | $0.02-0.20/kWh | $0.10 | Max overnight preservation incentive (price-scaled) |
-| `number.victron_mpc_battery_optimizer_soc_floor` | SoC Floor | 15-30% | 20% | Minimum daytime battery level |
+| `number.victron_mpc_battery_optimizer_soc_floor` | SoC Floor | 15-30% | 30% | Minimum daytime battery level (operating floor, keeps ~4.3 kWh reserve) |
 | `number.victron_mpc_battery_optimizer_overnight_min_soc` | Overnight Min SoC | 20-45% | 30% | Hard overnight floor (22:00-06:00) |
 | `number.victron_mpc_battery_optimizer_load_inflation` | Load Inflation | 5-25% | 10% | Safety margin on load forecasts |
 | `number.victron_mpc_battery_optimizer_spike_threshold` | Spike Threshold | $0.50-5.00/kWh | $1.00 | Price above which spike discharge is forced |
@@ -149,7 +149,10 @@ Every 5 minutes, the DataUpdateCoordinator runs a full optimization cycle:
 4. **Builds a 24-hour forecast** of solar production, household load, and buy/sell prices
 5. **Solves a Linear Program** (scipy HiGHS, 288 timesteps) minimizing total electricity cost
 6. **Applies safety overrides** (spike = discharge, negative pricing = charge)
-7. **Writes Modbus registers** R2901 (ESS min SoC) and R2706 (max feed-in) to the Cerbo GX. For solar_charge/hold/discharge modes, R2901 is set BELOW current SoC (as a floor). Only grid_charge sets R2901 ABOVE current SoC.
+7. **Writes Modbus registers** R2901 (ESS min SoC) and R2706 (max feed-in) to the Cerbo GX:
+   - `grid_charge`: register = target SoC (above current, forces grid charge)
+   - `solar_charge`: register = hard floor 30% (solar charges naturally)
+   - `discharge`/`hold`: register = LP trajectory floor - 5% buffer (LP controls rate, buffer prevents grid import)
 
 The LP objective minimizes:
 ```

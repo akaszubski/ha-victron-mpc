@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-03-20
+
+### Changed
+
+- **SoC floor raised from 20% to 30%**: Daytime operating floor is now 30% (default). This is the OPERATING floor, not the hardware floor (10%) or genset trigger (~15-20%). Keeps ~4.3 kWh (1.4 kWh above hardware minimum) as emergency reserve at all times. Grid-down exception: Victron ESS handles islanding independently, genset auto-starts.
+- **Three-layer solar forecast architecture**: `Final = Solcast cloud shape x VRM coefficient x VRM hourly mask`. Layer 1 (Solcast): cloud-aware hourly shape from satellite. Layer 2 (VRM coefficient): site shading ratio (~0.65 March, ~0.80 summer, ~0.45 winter), derived from `VRM_best_day / Solcast_clear_sky`. Layer 3 (VRM hourly mask): zeros hours where VRM P90 < 0.2 kW (morning/evening shaded), caps partially shaded hours at VRM P90. Replaces simple VRM P90 per-hour cap.
+- **Register logic finalized with 5% buffer**: After 4 iterations, the correct register approach: `grid_charge` = target SoC (above current), `solar_charge` = hard floor 30%, `discharge`/`hold` = LP trajectory floor - 5% buffer. The buffer prevents grid import from register being too close to current SoC.
+- **Mac runner permanently stopped**: `com.homeassistant.mpc` launchctl service unloaded. All 12 YAML automations have `initial_state: false`. HACS integration is sole controller.
+
+### Added
+
+- **Tomorrow stitching**: After sunset, appends tomorrow's Solcast forecast for overnight LP planning.
+- **Amber forecast logging**: Each 5-min cycle logs actual price, spot price, margin, forecast accuracy at +1h/+2h/+3h/+6h, and spike predicted vs actual. Rolling 7-day buffer (2016 entries). Purpose: identify systematic forecast biases by time of day.
+- **Solcast API management**: ha-solcast-solar configured in DAYLIGHT mode (`auto_update=1`), 10 calls/day spread sunrise-sunset. Quota resets at local midnight. Stale data (>12h) degrades gracefully: VRM coefficient + mask + intraday correction compensate.
+
 ## [0.4.1] - 2026-03-19
 
 ### Fixed
@@ -67,6 +82,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Diagnostics**: Downloadable diagnostics dump with redacted credentials
 - **Documentation**: Setup guide, technical deep-dive, tuning guide, troubleshooting, full entity reference with example Lovelace cards
 
+[0.5.0]: https://github.com/akaszubski/ha-victron-mpc/releases/tag/v0.5.0
 [0.4.1]: https://github.com/akaszubski/ha-victron-mpc/releases/tag/v0.4.1
 [0.4.0]: https://github.com/akaszubski/ha-victron-mpc/releases/tag/v0.4.0
 [0.3.0]: https://github.com/akaszubski/ha-victron-mpc/releases/tag/v0.3.0
