@@ -157,7 +157,7 @@ After completing the config flow, the integration creates a **Victron MPC Batter
 Go to **Settings** > **Devices & Services** > **Victron MPC Battery Optimizer** and verify:
 
 - 11 sensor entities (Battery Plan, Decision, Effective Price, etc.)
-- 6 number entities (Battery Wear Cost, Sunset Reward, etc.)
+- 12 number entities (Battery Wear Cost, Sunset Reward, Overnight Hold Price Full/Zero, etc.)
 - 1 switch entity (Shadow Mode)
 - 3 binary sensor entities (Data Stale, Spike Override Active, Modbus Connected)
 

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-03-20
+
+### Changed
+
+- **schedule_30min extended to 48 entries (full 24h)**: Was 16 entries (8h). Now shows the complete LP plan including overnight and morning periods. Dashboard charts can display the full 24-hour SoC/price trajectory.
+- **Notifications go to ak_iphone only**: Removed skiphone from notification targets.
+
+### Added
+
+- **Two new number entities for overnight hold price scaling**: Overnight Hold Price (Full) (default $0.15) and Overnight Hold Price (Zero) (default $0.25). These expose the overnight hold reward scaling thresholds as UI-adjustable number entities, replacing the options-flow-only parameters. Total number entities: 12 (was 10).
+
 ## [0.5.0] - 2026-03-20
 
 ### Changed
@@ -82,6 +93,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Diagnostics**: Downloadable diagnostics dump with redacted credentials
 - **Documentation**: Setup guide, technical deep-dive, tuning guide, troubleshooting, full entity reference with example Lovelace cards
 
+[0.5.1]: https://github.com/akaszubski/ha-victron-mpc/releases/tag/v0.5.1
 [0.5.0]: https://github.com/akaszubski/ha-victron-mpc/releases/tag/v0.5.0
 [0.4.1]: https://github.com/akaszubski/ha-victron-mpc/releases/tag/v0.4.1
 [0.4.0]: https://github.com/akaszubski/ha-victron-mpc/releases/tag/v0.4.0

@@ -57,13 +57,16 @@ All values are in $/kWh to be directly comparable with electricity prices.
 
 ### Price-Scaled Overnight Hold Reward
 
-The overnight hold reward is not a fixed value. Before each optimization, it is scaled based on the average overnight grid price:
+The overnight hold reward is not a fixed value. Before each optimization, it is scaled based on the average overnight grid price. The scaling thresholds are configurable via two number entities:
+
+- **Overnight Hold Price (Full)** (`number.victron_mpc_battery_optimizer_overnight_hold_price_full`, default $0.15): Full hold reward applies below this price
+- **Overnight Hold Price (Zero)** (`number.victron_mpc_battery_optimizer_overnight_hold_price_zero`, default $0.25): Hold reward drops to zero above this price
 
 | Overnight Price | Scaled Reward | Effect |
 |----------------|---------------|--------|
-| <= $0.15/kWh | Full $0.10 | Preserve battery -- grid is genuinely cheap overnight |
-| $0.22/kWh | ~$0.05 | Moderate hold |
-| >= $0.30/kWh | $0.00 | No hold incentive -- discharging overnight saves money |
+| <= $0.15/kWh (Hold Price Full) | Full $0.10 | Preserve battery -- grid is genuinely cheap overnight |
+| $0.20/kWh | ~$0.05 | Moderate hold (linear interpolation) |
+| >= $0.25/kWh (Hold Price Zero) | $0.00 | No hold incentive -- discharging overnight saves money |
 
 This means the optimizer naturally discharges during moderate overnight pricing and holds when overnight rates are genuinely cheap.
 

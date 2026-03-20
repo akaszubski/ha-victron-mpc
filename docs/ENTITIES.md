@@ -61,7 +61,7 @@ All entities are grouped under a single **Victron MPC Battery Optimizer** device
 | `battery_soc_pct` | float | Current battery SoC |
 | `current_solar_w` | float | Current solar production in watts |
 | `current_load_w` | float | Current household load in watts |
-| `schedule_30min` | string | JSON array of 30-min SoC/price schedule for dashboard |
+| `schedule_30min` | string | JSON array of 48 x 30-min SoC/price entries (full 24h LP plan) for dashboard |
 | `soc_1h_pct` through `soc_4h_pct` | float | Planned SoC trajectory |
 | `amber_forecast_log` | string | JSON array of rolling 7-day Amber forecast accuracy data (2016 entries). Each entry: actual_price, spot_price, margin, forecast_1h/2h/3h/6h, spike_predicted, spike_actual. Use to identify systematic forecast biases by time of day. |
 
@@ -200,7 +200,7 @@ All entities are grouped under a single **Victron MPC Battery Optimizer** device
 
 ---
 
-## Number Entities (10 Tunables)
+## Number Entities (12 Tunables)
 
 All decision thresholds are configurable via the UI -- no hardcoded values remain in the decision logic. Changes take effect on the next 5-minute optimization cycle.
 
@@ -211,6 +211,8 @@ All decision thresholds are configurable via the UI -- no hardcoded values remai
 | `number.…_battery_wear_cost` | Battery Wear Cost | 0.01 | 0.10 | 0.01 | $/kWh | 0.05 | Box |
 | `number.…_sunset_reward` | Sunset Reward | 0.01 | 0.10 | 0.01 | $/kWh | 0.04 | Box |
 | `number.…_overnight_hold_reward` | Overnight Hold Reward | 0.02 | 0.20 | 0.01 | $/kWh | 0.10 | Box |
+| `number.…_overnight_hold_price_full` | Overnight Hold Price (Full) | 0.05 | 0.50 | 0.01 | $/kWh | 0.15 | Box |
+| `number.…_overnight_hold_price_zero` | Overnight Hold Price (Zero) | 0.10 | 1.00 | 0.01 | $/kWh | 0.25 | Box |
 
 ### SoC Constraints
 

@@ -115,6 +115,8 @@ All decision thresholds are configurable -- no hardcoded values in the logic.
 | `number.victron_mpc_battery_optimizer_battery_wear_cost` | Battery Wear Cost | $0.01-0.10/kWh | $0.05 | Penalty for battery cycling |
 | `number.victron_mpc_battery_optimizer_sunset_reward` | Sunset Reward | $0.01-0.10/kWh | $0.04 | Incentive for full battery at sunset |
 | `number.victron_mpc_battery_optimizer_overnight_hold_reward` | Overnight Hold Reward | $0.02-0.20/kWh | $0.10 | Max overnight preservation incentive (price-scaled) |
+| `number.victron_mpc_battery_optimizer_overnight_hold_price_full` | Overnight Hold Price (Full) | $0.05-0.50/kWh | $0.15 | Overnight price below which full hold reward applies |
+| `number.victron_mpc_battery_optimizer_overnight_hold_price_zero` | Overnight Hold Price (Zero) | $0.10-1.00/kWh | $0.25 | Overnight price above which hold reward drops to zero |
 | `number.victron_mpc_battery_optimizer_soc_floor` | SoC Floor | 15-30% | 30% | Minimum daytime battery level (operating floor, keeps ~4.3 kWh reserve) |
 | `number.victron_mpc_battery_optimizer_overnight_min_soc` | Overnight Min SoC | 20-45% | 30% | Hard overnight floor (22:00-06:00) |
 | `number.victron_mpc_battery_optimizer_load_inflation` | Load Inflation | 5-25% | 10% | Safety margin on load forecasts |

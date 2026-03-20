@@ -46,10 +46,15 @@ Reward for having a full battery at sunset (evening peak preparation).
 
 Maximum reward for preserving battery charge during overnight hours. This is **price-scaled** -- the value you set is the maximum, not a fixed value.
 
-Before each optimization, the reward is scaled based on average overnight grid price:
+Before each optimization, the reward is scaled based on average overnight grid price. The scaling thresholds are now configurable via two number entities:
+
+- **Overnight Hold Price (Full)** (default $0.15): full reward below this price
+- **Overnight Hold Price (Zero)** (default $0.25): zero reward above this price
+
+Scaling examples:
 - Grid <= $0.15 -> full value (preserve for morning spikes)
-- Grid $0.22 -> ~50% of value (moderate hold)
-- Grid >= $0.30 -> $0.00 (no hold -- discharging saves money)
+- Grid $0.20 -> ~50% of value (moderate hold)
+- Grid >= $0.25 -> $0.00 (no hold -- discharging saves money)
 
 | Value | Effect |
 |-------|--------|
@@ -170,8 +175,8 @@ These are available via **Settings** > **Devices & Services** > **Victron MPC** 
 | Defensive Price | $2.00 | Same as the number entity |
 | Amber Blip Minutes | 5 | Same as the number entity |
 | Feed-in Export Threshold | $0.10 | Same as the number entity |
-| Overnight Price Low | $0.15 | Full hold reward below this overnight price |
-| Overnight Price High | $0.25 | Zero hold reward above this overnight price |
+| Overnight Hold Price (Full) | $0.15 | Full hold reward below this overnight price (also a number entity) |
+| Overnight Hold Price (Zero) | $0.25 | Zero hold reward above this overnight price (also a number entity) |
 | Feed-in SoC Threshold | 30% | Min SoC to allow spike export |
 | Fallback Price | $0.30 | Assumed price when no data at all |
 | Shadow Mode | ON | Log decisions without writing registers |
@@ -189,6 +194,8 @@ All tunables are clamped to safe ranges to prevent misconfiguration:
 | Battery Wear Cost | 0.01 | 0.10 | 0.01 | $/kWh |
 | Sunset Reward | 0.01 | 0.10 | 0.01 | $/kWh |
 | Overnight Hold Reward | 0.02 | 0.20 | 0.01 | $/kWh |
+| Overnight Hold Price (Full) | 0.05 | 0.50 | 0.01 | $/kWh |
+| Overnight Hold Price (Zero) | 0.10 | 1.00 | 0.01 | $/kWh |
 | SoC Floor | 15 | 30 | 1 | % |
 | Overnight Min SoC | 20 | 45 | 1 | % |
 | Load Inflation | 5 | 25 | 1 | % |
