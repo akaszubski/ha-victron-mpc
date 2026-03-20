@@ -105,7 +105,9 @@
       "spike_threshold": { "name": "Spike Threshold" },
       "defensive_price": { "name": "Defensive Price (Amber Down)" },
       "amber_blip_minutes": { "name": "Amber Blip Tolerance" },
-      "feedin_export_threshold": { "name": "Feed-in Export Threshold" }
+      "feedin_export_threshold": { "name": "Feed-in Export Threshold" },
+      "overnight_price_low": { "name": "Overnight Hold Price (Full)" },
+      "overnight_price_high": { "name": "Overnight Hold Price (Zero)" }
     },
     "switch": {
       "shadow_mode": { "name": "Shadow Mode" }
