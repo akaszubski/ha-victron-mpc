@@ -373,7 +373,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             grid_import_w = self._get_grid_import()
             genset_active = self._is_genset_active()
 
-            if mode != "grid_charge" and grid_import_w > 200 and not genset_active:
+            if mode != "grid_charge" and grid_import_w > 200 and not genset_active and soc_pct > 35:
                 LOGGER.warning(
                     "GRID IMPORT ANOMALY: mode=%s but grid importing %dW "
                     "(register=%d, SoC=%.0f%%). Auto-correcting to floor.",
