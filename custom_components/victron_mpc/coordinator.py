@@ -982,7 +982,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "grid_import_w": self._get_grid_import(),
                 "genset_active": self._is_genset_active(),
                 "input_source": "genset" if self._is_genset_active() else "grid",
-                "schedule_30min": json.dumps(schedule_30min[:16]),
+                "schedule_30min": json.dumps(schedule_30min[:48]),
                 **soc_lookahead,
             },
             # Scalar sensors
