@@ -327,7 +327,9 @@ def _build_output(result, inputs: OptInput, solve_ms: float) -> OptOutput:
     # CRITICAL: The Victron ESS treats register > current SoC as "charge to
     # this level by any means". If solar can't keep up, it pulls from grid.
     # Only set register > SoC when we WANT grid charging.
-    if p_charge[0] > 0.05 and grid_import[0] > inputs.load_forecast_kw[0] + 0.1:
+    if (p_charge[0] > 0.05
+            and grid_import[0] > inputs.load_forecast_kw[0] + 0.1
+            and inputs.solar_forecast_kw[0] < inputs.load_forecast_kw[0]):
         # Grid charge mode — optimizer explicitly plans grid import above load.
         # Set register ABOVE current SoC to force ESS to charge from grid.
         target_register = _soc_to_register(target_soc_pct)
@@ -336,7 +338,10 @@ def _build_output(result, inputs: OptInput, solve_ms: float) -> OptOutput:
         # Set register to hard floor so ESS doesn't pull from grid.
         # Solar charges naturally above the floor regardless of register.
         soc_floor_pct = inputs.soc_min_kwh / inputs.battery_capacity_kwh * 100
-        target_register = _soc_to_register(soc_floor_pct)
+        # Register 1% below floor prevents ESS grid pull when register ≈ SoC.
+        # Hard minimum: never below 10% (hardware limit).
+        register_floor = max(10.0, soc_floor_pct - 1.0)
+        target_register = _soc_to_register(register_floor)
     else:
         # Discharge or hold — use the trajectory floor MINUS a buffer.
         #
@@ -351,7 +356,9 @@ def _build_output(result, inputs: OptInput, solve_ms: float) -> OptOutput:
         #
         # Hard floor enforced: never go below soc_min (20%).
         soc_floor_pct = inputs.soc_min_kwh / inputs.battery_capacity_kwh * 100
-        buffered_floor = max(soc_floor_pct, discharge_floor_pct - 5.0)
+        # Register 1% below operating floor to prevent ESS grid leak at floor.
+        register_min = max(10.0, soc_floor_pct - 1.0)
+        buffered_floor = max(register_min, discharge_floor_pct - 5.0)
         target_register = _soc_to_register(buffered_floor)
 
     # Determine mode

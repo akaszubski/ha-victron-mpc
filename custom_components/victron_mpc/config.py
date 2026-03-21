@@ -90,7 +90,7 @@ class MPCTunables:
     soc_floor_pct: float = 20.0
 
     # Overnight minimum SoC — hard constraint during overnight hours
-    overnight_min_soc_pct: float = 30.0
+    overnight_min_soc_pct: float = 31.0
 
     # Safety & override thresholds
     spike_threshold: float = 1.00  # $/kWh — force discharge above this
@@ -160,6 +160,13 @@ class MPCTunables:
     indoor_ac_boost_hours: int = 5
     indoor_ac_running_kw: float = 2.0
 
+    # Scheduled load boost — hot water system
+    # Adds expected load during scheduled time window (e.g., morning hot water)
+    hot_water_boost_kw: float = 2.5  # kW draw of hot water element
+    hot_water_start_hour: float = 6.5  # 06:30 local
+    hot_water_duration_minutes: float = 10.0  # Typical cycle duration
+    hot_water_enabled: bool = False  # Disabled by default until configured
+
     @property
     def horizon_steps(self) -> int:
         return self.forecast_hours * 60 // self.dt_minutes
@@ -208,8 +215,8 @@ TUNABLE_BOUNDS: dict[str, tuple[float, float]] = {
     "sunset_reward": (0.01, 0.10),
     "terminal_reward": (0.01, 0.10),
     "overnight_hold_reward": (0.02, 0.20),
-    "soc_floor_pct": (15.0, 30.0),
-    "overnight_min_soc_pct": (20.0, 45.0),
+    "soc_floor_pct": (15.0, 35.0),
+    "overnight_min_soc_pct": (20.0, 50.0),
     "load_inflation_pct": (5.0, 25.0),
     "solar_cloud_impact": (0.50, 0.90),
     "solar_derating_min": (0.30, 0.70),

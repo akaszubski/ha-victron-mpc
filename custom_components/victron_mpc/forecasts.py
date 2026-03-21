@@ -739,9 +739,16 @@ class ForecastBuilder:
         """
         current_hour_f = now.hour + now.minute / 60.0
 
+        # Before the intraday correction window, don't adjust day type at all.
+        # Pre-dawn fog/cloud readings are not indicative of daytime conditions.
+        # The classifier will self-correct once real solar data is available.
+        if current_hour_f < self._tunables.intraday_early_hour:
+            return day_type
+
         # Cloud layer override: if we have real-time data showing
         # heavy low stratus (>80%), immediately classify as overcast.
         # Low cloud = thick stratus that blocks most solar.
+        # Only applies during daylight hours (after intraday_early_hour).
         cloud_override_threshold = self._tunables.cloud_override_low_pct
         if self._cloud_layers_cache and day_type not in ("overcast", "rain"):
             current_layers = self._cloud_layers_cache.get(0, {})
@@ -753,9 +760,6 @@ class ForecastBuilder:
                     low_cloud, day_type,
                 )
                 return "overcast"
-
-        if current_hour_f < self._tunables.intraday_early_hour:
-            return day_type  # Too early to judge
 
         try:
             solar_yield_entity = self._entities.get(
@@ -1714,6 +1718,23 @@ class ForecastBuilder:
                 else:
                     frac = 1.0 - (i - taper_start) / (boost_steps - taper_start)
                     load_kw[i] += ac_boost_kw * max(0, frac)
+
+        # Hot water schedule boost
+        if self._tunables.hot_water_enabled and self._tunables.hot_water_boost_kw > 0:
+            hw_start = self._tunables.hot_water_start_hour
+            hw_duration_h = self._tunables.hot_water_duration_minutes / 60.0
+            hw_end = hw_start + hw_duration_h
+            hw_kw = self._tunables.hot_water_boost_kw
+            for i in range(len(load_kw)):
+                step_hour = now.hour + now.minute / 60.0 + i * self.dt_hours
+                # Wrap around midnight
+                step_hour = step_hour % 24.0
+                if hw_start <= step_hour < hw_end:
+                    load_kw[i] += hw_kw
+            _LOGGER.debug(
+                "Hot water boost: +%.1fkW during %.1f-%.1f",
+                hw_kw, hw_start, hw_end,
+            )
 
         # Inject current real value
         if load_kw:
