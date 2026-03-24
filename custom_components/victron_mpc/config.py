@@ -65,9 +65,9 @@ class MPCTunables:
     """
 
     # Battery wear cost — discourages unnecessary cycling.
-    # Real cost ~$0.023/kWh. Set to $0.03 (real + buffer) — $0.05 was
-    # too conservative, LP passed on profitable arbitrage cycles.
-    battery_wear_cost: float = 0.03
+    # Pylontech Force-L2-48-296. $10K / (6000 cycles × 12.8 kWh) = $0.013 at rated.
+    # At actual ~60% DoD: ~$0.02/kWh. Stable temp, LFP chemistry.
+    battery_wear_cost: float = 0.02
 
     # Small penalty for grid import — nudges toward self-sufficiency
     grid_import_penalty: float = 0.02

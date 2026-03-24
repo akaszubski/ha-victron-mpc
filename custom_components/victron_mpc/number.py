@@ -164,7 +164,7 @@ NUMBER_DESCRIPTIONS: tuple[VictronMPCNumberDescription, ...] = (
 
 # Defaults matching the working MPCTunables from config.py
 _DEFAULTS: dict[str, float] = {
-    "battery_wear_cost": 0.03,
+    "battery_wear_cost": 0.02,
     "sunset_reward": 0.04,
     "overnight_hold_reward": 0.10,
     "soc_floor_pct": 20,
