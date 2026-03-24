@@ -65,7 +65,9 @@ class MPCTunables:
     """
 
     # Battery wear cost — discourages unnecessary cycling.
-    battery_wear_cost: float = 0.05
+    # Real cost ~$0.023/kWh. Set to $0.03 (real + buffer) — $0.05 was
+    # too conservative, LP passed on profitable arbitrage cycles.
+    battery_wear_cost: float = 0.03
 
     # Small penalty for grid import — nudges toward self-sufficiency
     grid_import_penalty: float = 0.02

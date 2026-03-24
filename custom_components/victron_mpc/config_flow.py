@@ -309,7 +309,7 @@ class VictronMPCOptionsFlow(OptionsFlow):
                     # Battery economics
                     vol.Optional(
                         "battery_wear_cost",
-                        default=current.get("battery_wear_cost", 0.05),
+                        default=current.get("battery_wear_cost", 0.03),
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
                             min=0.01, max=0.10, step=0.01, mode="box"
