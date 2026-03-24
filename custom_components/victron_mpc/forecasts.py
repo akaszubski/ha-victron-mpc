@@ -724,24 +724,40 @@ class ForecastBuilder:
             _LOGGER.debug("Day type classification failed", exc_info=True)
             return default
 
-    def _maybe_adjust_day_type(self, now: datetime, day_type: str) -> str:
+    def _maybe_adjust_day_type(
+        self, now: datetime, day_type: str, current_solar_w: float = 0.0,
+    ) -> str:
         """Adjust day type if actual solar yield diverges from expected.
 
-        Starting at 8am (was 10am), compares actual yield to VRM forecast
-        using a sin^2 curve to estimate what fraction should have been
-        produced by now.
-        - If actual < 30% of expected, downgrades one level (aggressive)
-        - If actual < 60% of expected after 10am, downgrades one level
-        - If actual > 150% of expected, upgrades one level
-
-        Also checks real-time cloud layers: if current low cloud > 80%,
-        force overcast regardless of forecast classification.
+        Three mechanisms:
+        1. Early mismatch (8:30-10am): if instantaneous solar > 400W while
+           classified as rain/overcast, upgrade immediately. Catches clear-sky
+           days misclassified by overnight met.no forecast.
+        2. Yield-based (after intraday_early_hour): compares cumulative yield
+           to day-type-adjusted expected (VRM × percentile × sin² curve).
+        3. Cloud layer override: heavy low stratus forces overcast.
         """
         current_hour_f = now.hour + now.minute / 60.0
 
+        # --- Early mismatch fast path (8:30-10am) ---
+        # Rain P15 at 9am predicts ~50-150W. If seeing 400W+, clearly wrong.
+        # Uses instantaneous power — reacts in one cycle, no yield needed.
+        if 8.5 <= current_hour_f < 10.0 and current_solar_w >= 400.0:
+            if day_type in ("rain", "overcast"):
+                upgrade_map = {
+                    "rain": "overcast",
+                    "overcast": "partly_cloudy",
+                }
+                new_type = upgrade_map[day_type]
+                _LOGGER.info(
+                    "Early day type upgrade: %s -> %s "
+                    "(%.0fW solar before 10am — too high for %s)",
+                    day_type, new_type, current_solar_w, day_type,
+                )
+                return new_type
+
         # Before the intraday correction window, don't adjust day type at all.
         # Pre-dawn fog/cloud readings are not indicative of daytime conditions.
-        # The classifier will self-correct once real solar data is available.
         if current_hour_f < self._tunables.intraday_early_hour:
             return day_type
 
@@ -785,10 +801,16 @@ class ForecastBuilder:
             elapsed = min(current_hour_f - solar_start, solar_length)
             progress = elapsed / solar_length
             cum_fraction = progress - math.sin(2 * math.pi * progress) / (2 * math.pi)
-            expected_by_now = forecast_daily_kwh * cum_fraction
+
+            # Scale by day type percentile so the comparison is against what
+            # this weather type would actually produce, not raw clear-sky VRM.
+            # Without this, rain (P15) on a clear day looks "normal" vs raw VRM
+            # and the upgrade never triggers.
+            percentile = self._tunables.solar_day_type_percentiles.get(day_type, 0.90)
+            expected_by_now = forecast_daily_kwh * percentile * cum_fraction
 
             # Lower threshold before 10am to enable early detection
-            min_expected = 0.3 if current_hour_f < 10.0 else 1.0
+            min_expected = 0.3 if current_hour_f < 10.0 else 0.5
             if expected_by_now < min_expected:
                 return day_type
 
@@ -1122,7 +1144,7 @@ class ForecastBuilder:
 
         # Reality check: if actual yield is far below forecast by midday,
         # downgrade day type
-        day_type = self._maybe_adjust_day_type(now, day_type)
+        day_type = self._maybe_adjust_day_type(now, day_type, current_solar_w)
 
         # Select VRM percentile based on day type
         percentile = self._tunables.solar_day_type_percentiles.get(day_type, 0.90)
@@ -1891,7 +1913,13 @@ class ForecastBuilder:
     # ------------------------------------------------------------------
 
     def _compute_sunset_step(self, now: datetime) -> int | None:
-        """Find the horizon step index corresponding to sunset."""
+        """Find the horizon step index corresponding to sunset.
+
+        Returns None if sunset is past, beyond horizon, or within 2 hours.
+        The 2-hour cutoff prevents the sunset reward from discouraging
+        evening peak discharge — by then SoC is set and the reward just
+        causes hold oscillation during expensive grid hours.
+        """
         try:
             sun = self._hass.states.get("sun.sun")
             if sun is None:
@@ -1904,8 +1932,8 @@ class ForecastBuilder:
             )
             sunset_local = sunset_dt.astimezone(now.astimezone().tzinfo)
             delta_hours = (sunset_local - now).total_seconds() / 3600
-            if delta_hours < 0 or delta_hours > self._tunables.forecast_hours:
-                return None
+            if delta_hours < 2.0 or delta_hours > self._tunables.forecast_hours:
+                return None  # Past, imminent, or beyond horizon
             return int(delta_hours / self.dt_hours)
         except Exception:
             return None
