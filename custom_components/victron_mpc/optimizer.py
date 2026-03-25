@@ -55,6 +55,11 @@ class OptInput:
     sunset_reward: float  # $/kWh reward for SoC at sunset
     terminal_reward: float  # $/kWh reward for SoC at end of horizon
 
+    # Soft floor band — penalty-based preferred minimum (30%), above hard floor (20%).
+    # LP prefers SoC above soft floor but won't panic-buy expensive grid to recover.
+    soc_soft_floor_kwh: float = 0.0  # 0 = disabled, >0 = penalty-based soft floor
+    soft_floor_penalty: float = 0.0  # $/kWh/h penalty for SoC below soft floor
+
     # Overnight preservation — reward for maintaining SoC during overnight hours
     overnight_hold_reward: float = 0.0
     overnight_steps: list[int] | None = None  # Step indices that are "overnight"
@@ -117,7 +122,12 @@ def optimize(inputs: OptInput) -> OptOutput:
     eta_d = inputs.discharge_efficiency
     soc_init = inputs.battery_soc_kwh
 
-    n_vars = 5 * N
+    # Soft floor band: add slack variables if soft floor is active
+    use_soft_floor = (
+        inputs.soc_soft_floor_kwh > inputs.soc_min_kwh
+        and inputs.soft_floor_penalty > 0
+    )
+    n_vars = 6 * N if use_soft_floor else 5 * N
 
     # Variable index helpers
     def pc(t):
@@ -135,12 +145,20 @@ def optimize(inputs: OptInput) -> OptOutput:
     def su(t):
         return 4 * N + t  # solar_used
 
+    def bf(t):
+        return 5 * N + t  # below_floor slack (kWh below soft floor)
+
     # === OBJECTIVE ===
     c = np.zeros(n_vars)
     for t in range(N):
         c[gi(t)] = inputs.buy_price[t] * dt + inputs.grid_import_penalty * dt
         c[ge(t)] = -inputs.sell_price[t] * dt
         c[pd(t)] = inputs.battery_wear_cost * dt
+
+    # Soft floor penalty
+    if use_soft_floor:
+        for t in range(N):
+            c[bf(t)] = inputs.soft_floor_penalty * dt
 
     # Sunset reward: encourage full battery at sunset
     # soc[sunset] = soc_init + sum_{k<sunset}(eta_c*pc[k] - pd[k]/eta_d)*dt
@@ -198,9 +216,15 @@ def optimize(inputs: OptInput) -> OptOutput:
     # Lower: -sum_{k<t}(eta_c*pc[k] - pd[k]/eta_d)*dt <= soc_init - soc_min[t]
     #
     # soc_min[t] can vary per step (e.g., higher overnight for safety margin)
+    # Clamp floor to current SoC if already below — prevents infeasibility
+    # when battery drained below floor (e.g., spike discharge, overnight load).
+    # The LP can then plan recovery back above floor rather than crashing.
+    effective_floor = min(inputs.soc_min_kwh, soc_init)
     soc_min_schedule = inputs.soc_min_schedule_kwh
     if soc_min_schedule is None:
-        soc_min_schedule = [inputs.soc_min_kwh] * N
+        soc_min_schedule = [effective_floor] * N
+    else:
+        soc_min_schedule = [min(v, soc_init) for v in soc_min_schedule]
 
     A_ub = np.zeros((2 * N, n_vars))
     b_ub = np.zeros(2 * N)
@@ -231,6 +255,11 @@ def optimize(inputs: OptInput) -> OptOutput:
         bounds.append((0, inputs.max_grid_export_kw))
     for t in range(N):
         bounds.append((0, max(0, inputs.solar_forecast_kw[t])))
+    # Soft floor slack: 0 to band width (soft_floor - hard_floor)
+    if use_soft_floor:
+        band_width = inputs.soc_soft_floor_kwh - inputs.soc_min_kwh
+        for t in range(N):
+            bounds.append((0, max(0, band_width)))
 
     # === SOLVE ===
     t_start = time.time()

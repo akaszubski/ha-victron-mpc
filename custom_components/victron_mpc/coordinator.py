@@ -212,10 +212,12 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 tunables.full_charge_interval_days
             )
 
-            # Time-varying SoC floor
-            daytime_min_kwh = (
+            # SoC floor band: hard floor (20%) + soft floor (30%)
+            hard_floor_kwh = (
                 max(system.soc_min_pct, tunables.soc_floor_pct) / 100.0 * cap
             )
+            soft_floor_kwh = tunables.soc_soft_floor_pct / 100.0 * cap
+            daytime_min_kwh = hard_floor_kwh
             overnight_min_kwh = max(
                 daytime_min_kwh, tunables.overnight_min_soc_pct / 100.0 * cap
             )
@@ -239,7 +241,9 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 dt_hours=tunables.dt_hours,
                 battery_soc_kwh=soc_pct / 100.0 * cap,
                 battery_capacity_kwh=cap,
-                soc_min_kwh=daytime_min_kwh,
+                soc_min_kwh=hard_floor_kwh,
+                soc_soft_floor_kwh=soft_floor_kwh,
+                soft_floor_penalty=tunables.soft_floor_penalty,
                 soc_min_schedule_kwh=soc_min_schedule,
                 soc_max_kwh=system.soc_max_pct / 100.0 * cap,
                 max_charge_kw=system.max_charge_kw,

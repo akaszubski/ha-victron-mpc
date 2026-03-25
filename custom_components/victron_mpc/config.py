@@ -78,8 +78,13 @@ class MPCTunables:
     # Reward for maintaining SoC at end of horizon (prevents drain-to-zero)
     terminal_reward: float = 0.03
 
-    # Overnight battery preservation
-    overnight_hold_reward: float = 0.10
+    # SoC floor band — soft floor with penalty, hard floor as absolute minimum.
+    soc_soft_floor_pct: float = 30.0  # Soft floor — preferred minimum
+    soft_floor_penalty: float = 0.10  # $/kWh/h cost for being below soft floor
+
+    # Overnight battery preservation — reduced from $0.10, was causing
+    # hold during $0.28+ evening peaks. $0.05 preserves cheap overnight.
+    overnight_hold_reward: float = 0.05
 
     # Hours that define "overnight" for preservation
     overnight_start_hour: int = 22
