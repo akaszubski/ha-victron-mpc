@@ -59,6 +59,7 @@ class OptInput:
     # LP prefers SoC above soft floor but won't panic-buy expensive grid to recover.
     soc_soft_floor_kwh: float = 0.0  # 0 = disabled, >0 = penalty-based soft floor
     soft_floor_penalty: float = 0.0  # $/kWh/h penalty for SoC below soft floor
+    grid_charge_boost: float = 0.0  # Incentive to charge during cheap grid periods
 
     # Overnight preservation — reward for maintaining SoC during overnight hours
     overnight_hold_reward: float = 0.0
@@ -194,6 +195,15 @@ def optimize(inputs: OptInput) -> OptOutput:
             for k in range(morning_step):
                 c[pc(k)] -= inputs.overnight_hold_reward * eta_c * dt
                 c[pd(k)] += inputs.overnight_hold_reward * dt / eta_d
+
+    # Grid-charge boost: incentivize charging when grid is cheap
+    if inputs.grid_charge_boost > 0 and len(inputs.buy_price) > 0:
+        avg_price = sum(float(p) for p in inputs.buy_price) / len(inputs.buy_price)
+        for t in range(N):
+            price_t = float(inputs.buy_price[t])
+            if price_t < avg_price and avg_price > 0:
+                bonus = inputs.grid_charge_boost * (avg_price - price_t) / avg_price
+                c[pc(t)] -= bonus * eta_c * dt
 
     # === EQUALITY CONSTRAINTS: Power balance ===
     # solar_used[t] + p_discharge[t] + grid_import[t]

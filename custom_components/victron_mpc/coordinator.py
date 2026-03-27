@@ -44,6 +44,36 @@ from .optimizer import OptInput, OptOutput, optimize
 from .utils import scale_overnight_hold_reward
 
 
+def _compute_dynamic_terminal_reward(
+    buy_prices: list[float],
+    solar_forecast_kw: list[float],
+    dt_hours: float,
+    base_reward: float = 0.03,
+    wear_cost: float = 0.02,
+) -> float:
+    """Terminal reward based on prices beyond horizon.
+
+    Values stored energy at the cost of grid during no-solar hours
+    at the tail of the forecast, not a fixed $0.03. Prevents LP from
+    undervaluing battery when tomorrow morning is expensive + no solar.
+    """
+    if buy_prices is None or len(buy_prices) == 0:
+        return base_reward
+    N = len(buy_prices)
+    tail_steps = min(72, N // 4)
+    tail_start = N - tail_steps
+    no_solar_prices = []
+    for i in range(tail_start, N):
+        solar = float(solar_forecast_kw[i]) if i < len(solar_forecast_kw) else 0.0
+        if solar < 0.2:
+            no_solar_prices.append(float(buy_prices[i]))
+    if not no_solar_prices:
+        return base_reward
+    avg_no_solar_price = sum(no_solar_prices) / len(no_solar_prices)
+    dynamic_reward = max(base_reward, avg_no_solar_price - wear_cost)
+    return round(min(dynamic_reward, 0.08), 4)
+
+
 class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Coordinator for Victron MPC Battery Optimizer.
 
@@ -244,6 +274,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 soc_min_kwh=hard_floor_kwh,
                 soc_soft_floor_kwh=soft_floor_kwh,
                 soft_floor_penalty=tunables.soft_floor_penalty,
+                grid_charge_boost=tunables.grid_charge_boost,
                 soc_min_schedule_kwh=soc_min_schedule,
                 soc_max_kwh=system.soc_max_pct / 100.0 * cap,
                 max_charge_kw=system.max_charge_kw,
@@ -260,7 +291,13 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 grid_import_penalty=tunables.grid_import_penalty,
                 sunset_step=forecasts["sunset_step"],
                 sunset_reward=tunables.sunset_reward,
-                terminal_reward=tunables.terminal_reward,
+                terminal_reward=_compute_dynamic_terminal_reward(
+                    forecasts["buy_price"],
+                    forecasts["solar_forecast_kw"],
+                    tunables.dt_hours,
+                    base_reward=tunables.terminal_reward,
+                    wear_cost=tunables.battery_wear_cost,
+                ),
                 overnight_hold_reward=overnight_hold,
                 overnight_steps=overnight_steps,
                 force_full_charge=force_full_charge,

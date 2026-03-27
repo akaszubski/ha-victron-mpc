@@ -84,6 +84,8 @@ class MPCTunables:
 
     # Overnight battery preservation — reduced from $0.10, was causing
     # hold during $0.28+ evening peaks. $0.05 preserves cheap overnight.
+    grid_charge_boost: float = 0.15  # Incentive to charge during cheap grid
+
     overnight_hold_reward: float = 0.05
 
     # Hours that define "overnight" for preservation
