@@ -487,7 +487,7 @@ class ForecastBuilder:
         )
 
         # Amber prices
-        buy_prices, sell_prices = self._build_price_forecast()
+        buy_prices, sell_prices, price_bands = self._build_price_forecast()
 
         # Solar forecast (weather-classified)
         solar_kw, solar_source, day_type = await self._build_solar_forecast(
@@ -507,6 +507,7 @@ class ForecastBuilder:
             "solar_forecast_kw": solar_kw,
             "load_forecast_kw": load_kw,
             "buy_price": buy_prices,
+            "price_bands": price_bands,
             "sell_price": sell_prices,
             "sunset_step": sunset_step,
             "current_solar_w": current_solar_w,
@@ -522,7 +523,7 @@ class ForecastBuilder:
     # Price forecast
     # ------------------------------------------------------------------
 
-    def _build_price_forecast(self) -> tuple[list[float], list[float]]:
+    def _build_price_forecast(self) -> tuple[list[float], list[float], list[str]]:
         """Build 5-min price arrays from Amber 30-min forecasts."""
         amber_forecast_id = self._entities.get(
             "amber_forecast", "sensor.amber_general_forecast",
@@ -552,12 +553,14 @@ class ForecastBuilder:
 
         buy_30min: list[float] = [current_buy]
         sell_30min: list[float] = [current_sell]
+        buy_descriptors_30min: list[str] = ["low"]  # Current period
 
         for f in buy_forecasts:
             try:
                 buy_30min.append(float(f.get("per_kwh", current_buy)))
             except (ValueError, TypeError):
                 buy_30min.append(current_buy)
+            buy_descriptors_30min.append(f.get("descriptor", "low"))
 
         for f in sell_forecasts:
             try:
@@ -565,12 +568,20 @@ class ForecastBuilder:
             except (ValueError, TypeError):
                 sell_30min.append(current_sell)
 
+        # Expand descriptors to 5-min (repeat each 30-min descriptor 6 times)
+        buy_descriptors_5min: list[str] = []
+        for d in buy_descriptors_30min:
+            buy_descriptors_5min.extend([d] * 6)
+        buy_descriptors_5min = buy_descriptors_5min[:self.N]
+        while len(buy_descriptors_5min) < self.N:
+            buy_descriptors_5min.append("low")
+
         # Interpolate 30-min -> 5-min
         steps_per_interval = 6  # 30min / 5min
         buy_5min = _interpolate_stepwise(buy_30min, steps_per_interval, self.N)
         sell_5min = _interpolate_stepwise(sell_30min, steps_per_interval, self.N)
 
-        return buy_5min, sell_5min
+        return buy_5min, sell_5min, buy_descriptors_5min
 
     # ------------------------------------------------------------------
     # Cloud layers (delegated to OpenMeteoClient)

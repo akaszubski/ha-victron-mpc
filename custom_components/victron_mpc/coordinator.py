@@ -44,6 +44,34 @@ from .optimizer import OptInput, OptOutput, optimize
 from .utils import scale_overnight_hold_reward
 
 
+
+def _build_soc_target_reward(
+    now, horizon_steps, dt_hours, tunables, buy_prices, price_bands=forecasts.get("price_bands"),
+):
+    """Build time-varying SoC target reward array."""
+    rewards = []
+    for i in range(horizon_steps):
+        hour_offset = i * dt_hours
+        hour_of_day = (now.hour + now.minute / 60 + hour_offset) % 24
+        if 17 <= hour_of_day < 21:
+            base = tunables.soc_profile_peak
+        elif 11 <= hour_of_day < 17:
+            base = tunables.soc_profile_pre_peak
+        elif 6 <= hour_of_day < 9:
+            base = tunables.soc_profile_morning
+        elif 22 <= hour_of_day or hour_of_day < 6:
+            base = tunables.soc_profile_overnight
+        else:
+            base = tunables.soc_profile_default
+        # Price bonus from Amber bands (seasonally adaptive)
+        band = price_bands[i] if price_bands and i < len(price_bands) else "low"
+        if band in ("extremely_low", "very_low"):
+            base += tunables.grid_charge_boost
+        elif band == "low":
+            base += tunables.grid_charge_boost * 0.5
+        rewards.append(round(base, 4))
+    return rewards
+
 def _compute_dynamic_terminal_reward(
     buy_prices: list[float],
     solar_forecast_kw: list[float],
@@ -275,6 +303,11 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 soc_soft_floor_kwh=soft_floor_kwh,
                 soft_floor_penalty=tunables.soft_floor_penalty,
                 grid_charge_boost=tunables.grid_charge_boost,
+                soc_target_reward=_build_soc_target_reward(
+                    now, tunables.horizon_steps, tunables.dt_hours,
+                    tunables, forecasts["buy_price"],
+                    price_bands=forecasts.get("price_bands"),
+                ) if tunables.soc_profile_enabled else None,
                 soc_min_schedule_kwh=soc_min_schedule,
                 soc_max_kwh=system.soc_max_pct / 100.0 * cap,
                 max_charge_kw=system.max_charge_kw,
@@ -855,6 +888,32 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # ------------------------------------------------------------------
     # Cell balancing
     # ------------------------------------------------------------------
+
+
+    def _extract_amber_bands(self, buy_prices):
+        """Extract Amber price band descriptors from forecast entity."""
+        try:
+            state = self._hass.states.get("sensor.amber_general_forecast")
+            if state is None:
+                return None
+            forecasts = state.attributes.get("forecasts", [])
+            if not forecasts:
+                return None
+            # Each forecast is 30min, expand to 5min steps
+            bands_30min = ["low"]  # Current period
+            for f in forecasts:
+                bands_30min.append(f.get("descriptor", "low"))
+            bands_5min = []
+            for b in bands_30min:
+                bands_5min.extend([b] * 6)
+            # Pad to horizon length
+            n = len(buy_prices)
+            bands_5min = bands_5min[:n]
+            while len(bands_5min) < n:
+                bands_5min.append("low")
+            return bands_5min
+        except Exception:
+            return None
 
     def _check_full_charge_needed(self, interval_days: int) -> bool:
         """Check if periodic full charge is due for cell balancing.

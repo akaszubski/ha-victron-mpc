@@ -84,7 +84,15 @@ class MPCTunables:
 
     # Overnight battery preservation — reduced from $0.10, was causing
     # hold during $0.28+ evening peaks. $0.05 preserves cheap overnight.
-    grid_charge_boost: float = 0.15  # Incentive to charge during cheap grid
+    grid_charge_boost: float = 0.15
+
+    # SoC profile — unified time-varying reward (replaces legacy rewards)
+    soc_profile_enabled: bool = True
+    soc_profile_default: float = 0.05
+    soc_profile_peak: float = 0.15
+    soc_profile_pre_peak: float = 0.12
+    soc_profile_morning: float = 0.10
+    soc_profile_overnight: float = 0.03  # Incentive to charge during cheap grid
 
     overnight_hold_reward: float = 0.05
 
@@ -96,7 +104,7 @@ class MPCTunables:
     full_charge_interval_days: int = 14
 
     # Configurable SoC floor (above hardware min, for user comfort)
-    soc_floor_pct: float = 20.0
+    soc_floor_pct: float = 10.0  # Hardware safe minimum
 
     # Overnight minimum SoC — hard constraint during overnight hours
     overnight_min_soc_pct: float = 31.0

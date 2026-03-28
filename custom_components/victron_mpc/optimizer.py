@@ -60,6 +60,7 @@ class OptInput:
     soc_soft_floor_kwh: float = 0.0  # 0 = disabled, >0 = penalty-based soft floor
     soft_floor_penalty: float = 0.0  # $/kWh/h penalty for SoC below soft floor
     grid_charge_boost: float = 0.0  # Incentive to charge during cheap grid periods
+    soc_target_reward: list[float] | None = None  # Time-varying SoC value (replaces legacy rewards)
 
     # Overnight preservation — reward for maintaining SoC during overnight hours
     overnight_hold_reward: float = 0.0
@@ -196,8 +197,19 @@ def optimize(inputs: OptInput) -> OptOutput:
                 c[pc(k)] -= inputs.overnight_hold_reward * eta_c * dt
                 c[pd(k)] += inputs.overnight_hold_reward * dt / eta_d
 
-    # Grid-charge boost: incentivize charging when grid is cheap
-    if inputs.grid_charge_boost > 0 and len(inputs.buy_price) > 0:
+    # SoC target reward: unified time-varying incentive (replaces legacy rewards)
+    if inputs.soc_target_reward is not None:
+        for t in range(N):
+            reward_t = inputs.soc_target_reward[t]
+            if reward_t > 0:
+                c[pc(t)] -= reward_t * eta_c * dt
+                c[pd(t)] += reward_t * dt / eta_d
+    else:
+        # Legacy rewards path
+        pass
+
+    # Grid-charge boost: incentivize charging when grid is cheap (legacy)
+    if inputs.soc_target_reward is None and inputs.grid_charge_boost > 0 and len(inputs.buy_price) > 0:
         avg_price = sum(float(p) for p in inputs.buy_price) / len(inputs.buy_price)
         for t in range(N):
             price_t = float(inputs.buy_price[t])
