@@ -24,7 +24,7 @@ class VictronSystem:
     max_solar_kw: float = 7.0  # PV array peak
     max_grid_import_kw: float = 10.0  # Main breaker limit
     max_grid_export_kw: float = 5.0  # Feed-in limit
-    inverter_max_kw: float = 5.0  # Quattro continuous rating
+    inverter_max_kw: float = 8.0  # Quattro 48/8000 continuous rating (8kVA)
     soc_min_pct: float = 10.0  # Hard floor (hardware limit)
     soc_max_pct: float = 100.0
     charge_efficiency: float = 0.95  # Round-trip ~90%
