@@ -252,6 +252,12 @@ def optimize(inputs: OptInput) -> OptOutput:
     else:
         soc_min_schedule = [min(v, soc_init) for v in soc_min_schedule]
 
+    use_sunset_constraint = (
+        inputs.sunset_step is not None
+        and 0 < inputs.sunset_step < N
+        and inputs.sunset_soc_target_pct > 0
+    )
+
     n_ub = 2 * N
     if use_sunset_constraint:
         n_ub += 1
