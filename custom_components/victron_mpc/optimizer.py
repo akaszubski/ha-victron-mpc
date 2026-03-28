@@ -393,6 +393,12 @@ def _build_output(result, inputs: OptInput, solve_ms: float) -> OptOutput:
         # Hard minimum: never below 10% (hardware limit).
         register_floor = max(10.0, soc_floor_pct - 1.0)
         target_register = _soc_to_register(register_floor)
+        # When solar exceeds load, always target 100%. Free solar should never
+        # be curtailed — the LP may say "88% is enough" but that extra 12% is
+        # free energy that avoids grid purchases tomorrow. No reason not to fill.
+        if (len(inputs.solar_forecast_kw) > 0
+                and inputs.solar_forecast_kw[0] > inputs.load_forecast_kw[0]):
+            target_soc_pct = 100.0
     else:
         # Discharge or hold — use the trajectory floor MINUS a buffer.
         #
