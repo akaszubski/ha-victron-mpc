@@ -46,7 +46,7 @@ from .utils import scale_overnight_hold_reward
 
 
 def _build_soc_target_reward(
-    now, horizon_steps, dt_hours, tunables, buy_prices, price_bands=forecasts.get("price_bands"),
+    now, horizon_steps, dt_hours, tunables, buy_prices, price_bands=None,
 ):
     """Build time-varying SoC target reward array."""
     rewards = []
