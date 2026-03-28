@@ -388,7 +388,7 @@ class TestBuildPriceForecast:
         )
 
         fb = _builder(hass, tunables)
-        buy, sell = fb._build_price_forecast()
+        buy, sell, bands = fb._build_price_forecast()
         assert len(buy) == STEPS_24H
         assert len(sell) == STEPS_24H
         # First value should be current price (repeated for first 6 steps)
@@ -410,7 +410,7 @@ class TestBuildPriceForecast:
         )
 
         fb = _builder(hass, tunables)
-        buy, sell = fb._build_price_forecast()
+        buy, sell, bands = fb._build_price_forecast()
         assert len(buy) == STEPS_24H
         assert len(sell) == STEPS_24H
 
@@ -420,7 +420,7 @@ class TestBuildPriceForecast:
         """No Amber entities → falls back to default prices."""
         # Don't set any Amber entities
         fb = _builder(hass, tunables)
-        buy, sell = fb._build_price_forecast()
+        buy, sell, bands = fb._build_price_forecast()
         assert len(buy) == STEPS_24H
         assert len(sell) == STEPS_24H
         # Default buy = 0.30, sell = 0.06 (from _get_state_value defaults)

@@ -40,8 +40,8 @@ class TestVictronSystem:
 class TestMPCTunables:
     def test_defaults(self):
         t = MPCTunables()
-        assert t.battery_wear_cost == 0.05
-        assert t.overnight_hold_reward == 0.10
+        assert t.battery_wear_cost == 0.02
+        assert t.overnight_hold_reward == 0.05
 
     def test_horizon_steps(self):
         t = MPCTunables()
@@ -72,10 +72,10 @@ class TestMPCTunables:
     def test_from_config_entry_clamps_bounds(self):
         t = MPCTunables.from_config_entry({
             "battery_wear_cost": 0.50,  # Way above max 0.10
-            "soc_floor_pct": 5.0,       # Below min 15.0
+            "soc_floor_pct": 5.0,       # Below min 10.0
         })
         assert t.battery_wear_cost == 0.10
-        assert t.soc_floor_pct == 15.0
+        assert t.soc_floor_pct == 10.0
 
     def test_cloud_layer_weights_defaults(self):
         t = MPCTunables()

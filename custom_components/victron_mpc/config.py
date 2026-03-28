@@ -232,7 +232,7 @@ TUNABLE_BOUNDS: dict[str, tuple[float, float]] = {
     "sunset_reward": (0.01, 0.10),
     "terminal_reward": (0.01, 0.10),
     "overnight_hold_reward": (0.02, 0.20),
-    "soc_floor_pct": (15.0, 35.0),
+    "soc_floor_pct": (10.0, 35.0),
     "overnight_min_soc_pct": (20.0, 50.0),
     "load_inflation_pct": (5.0, 25.0),
     "solar_cloud_impact": (0.50, 0.90),

@@ -41,6 +41,12 @@ def make_opt_input(
     overnight_hold_reward: float = 0.0,
     overnight_steps: list[int] | None = None,
     force_full_charge: bool = False,
+    soc_soft_floor_pct: float = 0.0,
+    soft_floor_penalty: float = 0.0,
+    sunset_soc_target_pct: float = 0.0,
+    grid_charge_boost: float = 0.0,
+    soc_target_reward: list[float] | None = None,
+    soc_min_schedule_kwh: list[float] | None = None,
 ) -> OptInput:
     """Create OptInput with sensible defaults. Scalars are broadcast to arrays."""
 
@@ -76,6 +82,12 @@ def make_opt_input(
         overnight_hold_reward=overnight_hold_reward,
         overnight_steps=overnight_steps,
         force_full_charge=force_full_charge,
+        soc_soft_floor_kwh=soc_soft_floor_pct / 100 * BATTERY_CAPACITY if soc_soft_floor_pct > 0 else 0.0,
+        soft_floor_penalty=soft_floor_penalty,
+        sunset_soc_target_pct=sunset_soc_target_pct,
+        grid_charge_boost=grid_charge_boost,
+        soc_target_reward=soc_target_reward,
+        soc_min_schedule_kwh=soc_min_schedule_kwh,
     )
 
 
