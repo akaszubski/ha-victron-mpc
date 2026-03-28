@@ -553,7 +553,11 @@ class ForecastBuilder:
 
         buy_30min: list[float] = [current_buy]
         sell_30min: list[float] = [current_sell]
-        buy_descriptors_30min: list[str] = ["low"]  # Current period
+        # Current period descriptor from first forecast entry (not hardcoded)
+        current_descriptor = "low"
+        if buy_forecasts:
+            current_descriptor = buy_forecasts[0].get("descriptor", "low")
+        buy_descriptors_30min: list[str] = [current_descriptor]
 
         for f in buy_forecasts:
             try:

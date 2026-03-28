@@ -334,17 +334,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 overnight_hold_reward=overnight_hold,
                 overnight_steps=overnight_steps,
                 force_full_charge=force_full_charge,
-                sunset_soc_target_pct=compute_sunset_target(
-                    buy_price=forecasts["buy_price"],
-                    solar_forecast_kw=forecasts["solar_forecast_kw"],
-                    load_forecast_kw=forecasts["load_forecast_kw"],
-                    sunset_step=forecasts["sunset_step"],
-                    battery_capacity_kwh=cap,
-                    charge_efficiency=system.charge_efficiency,
-                    discharge_efficiency=system.discharge_efficiency,
-                    dt_hours=tunables.dt_hours,
-                    max_charge_kw=system.max_charge_kw,
-                ),
+                sunset_soc_target_pct=95.0,  # Fixed 95% — dynamic target was too low on overcast days
             )
 
             # ----------------------------------------------------------

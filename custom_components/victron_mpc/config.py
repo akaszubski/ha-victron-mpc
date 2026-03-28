@@ -90,7 +90,7 @@ class MPCTunables:
     soc_profile_enabled: bool = True
     soc_profile_default: float = 0.05
     soc_profile_peak: float = 0.15
-    soc_profile_pre_peak: float = 0.12
+    soc_profile_pre_peak: float = 0.20  # Must exceed typical grid ($0.15 + $0.02 penalty)
     soc_profile_morning: float = 0.10
     soc_profile_overnight: float = 0.03  # Incentive to charge during cheap grid
 
