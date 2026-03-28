@@ -334,6 +334,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 overnight_hold_reward=overnight_hold,
                 overnight_steps=overnight_steps,
                 force_full_charge=force_full_charge,
+                sunset_soc_target_pct=95.0,  # Hard constraint: 95% by sunset
             )
 
             # ----------------------------------------------------------

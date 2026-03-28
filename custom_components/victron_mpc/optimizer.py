@@ -74,6 +74,10 @@ class OptInput:
     # Cell balancing — force charge to 100% for BMS health
     force_full_charge: bool = False
 
+    # Hard sunset SoC constraint — LP must reach this % by sunset_step.
+    # LP finds cheapest path to target. 0 = disabled.
+    sunset_soc_target_pct: float = 0.0
+
 
 @dataclass
 class OptOutput:
@@ -248,8 +252,11 @@ def optimize(inputs: OptInput) -> OptOutput:
     else:
         soc_min_schedule = [min(v, soc_init) for v in soc_min_schedule]
 
-    A_ub = np.zeros((2 * N, n_vars))
-    b_ub = np.zeros(2 * N)
+    n_ub = 2 * N
+    if use_sunset_constraint:
+        n_ub += 1
+    A_ub = np.zeros((n_ub, n_vars))
+    b_ub = np.zeros(n_ub)
 
     for t in range(1, N + 1):
         # Upper SoC bound: cumulative energy <= soc_max - soc_init
@@ -264,6 +271,18 @@ def optimize(inputs: OptInput) -> OptOutput:
             A_ub[N + t - 1, pc(k)] = -eta_c * dt
             A_ub[N + t - 1, pd(k)] = dt / eta_d
         b_ub[N + t - 1] = soc_init - soc_floor_t
+
+    # Sunset SoC constraint: soc[sunset_step] >= target
+    if use_sunset_constraint:
+        sunset_row = n_ub - 1
+        sunset_target_kwh = (
+            inputs.sunset_soc_target_pct / 100.0 * inputs.battery_capacity_kwh
+        )
+        effective_target = min(sunset_target_kwh, inputs.soc_max_kwh)
+        for k in range(inputs.sunset_step):
+            A_ub[sunset_row, pc(k)] = -eta_c * dt
+            A_ub[sunset_row, pd(k)] = dt / eta_d
+        b_ub[sunset_row] = soc_init - effective_target
 
     # === VARIABLE BOUNDS ===
     bounds = []
@@ -399,17 +418,7 @@ def _build_output(result, inputs: OptInput, solve_ms: float) -> OptOutput:
                 and inputs.solar_forecast_kw[0] > inputs.load_forecast_kw[0]):
             target_soc_pct = 100.0
 
-    # Hard rule: always target 100% by sunset. The LP optimizes the cheapest
-    # PATH to 100%, not WHETHER to reach it. Every night the battery drains
-    # to floor. Every morning has expensive peak with no solar. Starting at
-    # 88% vs 100% means hitting floor 2-3 hours earlier and buying peak grid.
-    # AC spikes and price spikes need maximum buffer.
-    import datetime as _dt
-    _now = _dt.datetime.now()
-    _hour = _now.hour + _now.minute / 60
-    if 11 <= _hour < 21 and target_soc_pct < 100.0:
-        # Pre-peak and peak hours: always aim for 100%
-        target_soc_pct = 100.0
+    # Sunset SoC constraint in LP handles 100% targeting — no runtime hacks needed
     else:
         # Discharge or hold — use the trajectory floor MINUS a buffer.
         #
