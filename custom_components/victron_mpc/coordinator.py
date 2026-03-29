@@ -49,6 +49,7 @@ from .utils import scale_overnight_hold_reward
 
 def _build_soc_target_reward(
     now, horizon_steps, dt_hours, tunables, buy_prices, price_bands=None,
+    solar_forecast_kw=None,
 ):
     """Build time-varying SoC target reward array."""
     rewards = []
@@ -65,6 +66,15 @@ def _build_soc_target_reward(
             base = tunables.soc_profile_overnight
         else:
             base = tunables.soc_profile_default
+        # Solar-aware insurance: when forecast solar is low (<300W),
+        # stored battery has insurance value as the only backup if load
+        # or prices spike. Boost reward toward grid price.
+        if solar_forecast_kw is not None and i < len(solar_forecast_kw):
+            solar_w = solar_forecast_kw[i] * 1000
+            if solar_w < 300:
+                buy_at_step = buy_prices[i] if i < len(buy_prices) else 0.15
+                solar_insurance = buy_at_step * 0.6
+                base = max(base, solar_insurance)
         # Price bonus from Amber bands (seasonally adaptive)
         band = price_bands[i] if price_bands and i < len(price_bands) else "low"
         if band in ("extremely_low", "very_low"):
@@ -314,6 +324,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     now, tunables.horizon_steps, tunables.dt_hours,
                     tunables, forecasts["buy_price"],
                     price_bands=forecasts.get("price_bands"),
+                    solar_forecast_kw=forecasts.get("solar_forecast_kw"),
                 ) if tunables.soc_profile_enabled else None,
                 soc_min_schedule_kwh=soc_min_schedule,
                 soc_max_kwh=system.soc_max_pct / 100.0 * cap,
