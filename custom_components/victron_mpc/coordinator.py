@@ -505,8 +505,8 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if self._genai_cycle_count >= GENAI_CYCLE_INTERVAL:
                 self._genai_cycle_count = 0
                 api_key = self.entry.data.get(
-                    "anthropic_api_key", ""
-                ) or self.entry.options.get("anthropic_api_key", "")
+                    "openrouter_api_key", ""
+                ) or self.entry.options.get("openrouter_api_key", "")
                 if api_key:
                     extra = {
                         "r2901_readback_pct": self._get_r2901_readback(),

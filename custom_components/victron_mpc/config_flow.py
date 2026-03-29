@@ -42,6 +42,7 @@ from .const import (
     CONF_MODBUS_SLAVE_VEBUS,
     CONF_SOC_FLOOR_PCT,
     CONF_SOLAR_POWER,
+    CONF_OPENROUTER_API_KEY,
     CONF_VRM_INSTALLATION_ID,
     CONF_VRM_TOKEN,
     CONF_WEATHER_ENTITY,
@@ -272,6 +273,7 @@ class VictronMPCConfigFlow(ConfigFlow, domain=DOMAIN):
                 {
                     vol.Optional(CONF_VRM_TOKEN, default=""): str,
                     vol.Optional(CONF_VRM_INSTALLATION_ID, default=""): str,
+                    vol.Optional(CONF_OPENROUTER_API_KEY, default=""): str,
                 }
             ),
             errors=errors,
@@ -346,6 +348,13 @@ class VictronMPCOptionsFlow(OptionsFlow):
                         selector.NumberSelectorConfig(
                             min=20, max=45, step=1, mode="slider"
                         )
+                    ),
+                    # GenAI health monitor
+                    vol.Optional(
+                        "openrouter_api_key",
+                        default=current.get("openrouter_api_key", ""),
+                    ): selector.TextSelector(
+                        selector.TextSelectorConfig(type="password")
                     ),
                     # Operating mode
                     vol.Optional(

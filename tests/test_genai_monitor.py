@@ -90,21 +90,23 @@ class TestRunGenaiHealthCheck:
         result = await run_genai_health_check(None, "", "snapshot")
 
         assert result["status"] == "SKIP"
-        assert "No Anthropic API key" in result["summary"]
+        assert "No OpenRouter API key" in result["summary"]
 
     @pytest.mark.asyncio
     async def test_successful_green_response(self):
         """Parses a clean GREEN JSON response."""
         api_response = {
-            "content": [
+            "choices": [
                 {
-                    "text": json.dumps(
-                        {
-                            "status": "GREEN",
-                            "summary": "All systems nominal",
-                            "details": "",
-                        }
-                    )
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "status": "GREEN",
+                                "summary": "All systems nominal",
+                                "details": "",
+                            }
+                        )
+                    }
                 }
             ]
         }
@@ -118,7 +120,7 @@ class TestRunGenaiHealthCheck:
         session = MagicMock()
         session.post = MagicMock(return_value=mock_resp)
 
-        result = await run_genai_health_check(session, "sk-test-key", "snapshot data")
+        result = await run_genai_health_check(session, "sk-or-test-key", "snapshot data")
 
         assert result["status"] == "GREEN"
         assert result["summary"] == "All systems nominal"
@@ -128,15 +130,17 @@ class TestRunGenaiHealthCheck:
     async def test_successful_red_response(self):
         """Parses a RED JSON response with details."""
         api_response = {
-            "content": [
+            "choices": [
                 {
-                    "text": json.dumps(
-                        {
-                            "status": "RED",
-                            "summary": "Grid charging during discharge mode",
-                            "details": "R2901 is set above current SoC",
-                        }
-                    )
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "status": "RED",
+                                "summary": "Grid charging during discharge mode",
+                                "details": "R2901 is set above current SoC",
+                            }
+                        )
+                    }
                 }
             ]
         }
@@ -150,16 +154,16 @@ class TestRunGenaiHealthCheck:
         session = MagicMock()
         session.post = MagicMock(return_value=mock_resp)
 
-        result = await run_genai_health_check(session, "sk-test-key", "snapshot data")
+        result = await run_genai_health_check(session, "sk-or-test-key", "snapshot data")
 
         assert result["status"] == "RED"
         assert "Grid charging" in result["summary"]
 
     @pytest.mark.asyncio
     async def test_handles_markdown_code_block_response(self):
-        """Strips markdown code fences from Claude response."""
+        """Strips markdown code fences from model response."""
         wrapped = '```json\n{"status": "YELLOW", "summary": "Minor issue", "details": "test"}\n```'
-        api_response = {"content": [{"text": wrapped}]}
+        api_response = {"choices": [{"message": {"content": wrapped}}]}
 
         mock_resp = AsyncMock()
         mock_resp.status = 200
@@ -170,7 +174,7 @@ class TestRunGenaiHealthCheck:
         session = MagicMock()
         session.post = MagicMock(return_value=mock_resp)
 
-        result = await run_genai_health_check(session, "sk-test-key", "snapshot")
+        result = await run_genai_health_check(session, "sk-or-test-key", "snapshot")
 
         assert result["status"] == "YELLOW"
         assert result["summary"] == "Minor issue"
@@ -187,15 +191,15 @@ class TestRunGenaiHealthCheck:
         session = MagicMock()
         session.post = MagicMock(return_value=mock_resp)
 
-        result = await run_genai_health_check(session, "sk-test-key", "snapshot")
+        result = await run_genai_health_check(session, "sk-or-test-key", "snapshot")
 
         assert result["status"] == "ERROR"
         assert "429" in result["summary"]
 
     @pytest.mark.asyncio
     async def test_handles_non_json_response(self):
-        """Returns ERROR when Claude returns non-JSON text."""
-        api_response = {"content": [{"text": "I cannot parse this as JSON"}]}
+        """Returns ERROR when model returns non-JSON text."""
+        api_response = {"choices": [{"message": {"content": "I cannot parse this as JSON"}}]}
 
         mock_resp = AsyncMock()
         mock_resp.status = 200
@@ -206,7 +210,7 @@ class TestRunGenaiHealthCheck:
         session = MagicMock()
         session.post = MagicMock(return_value=mock_resp)
 
-        result = await run_genai_health_check(session, "sk-test-key", "snapshot")
+        result = await run_genai_health_check(session, "sk-or-test-key", "snapshot")
 
         assert result["status"] == "ERROR"
         assert "Non-JSON" in result["summary"]
@@ -217,17 +221,17 @@ class TestRunGenaiHealthCheck:
         session = MagicMock()
         session.post = MagicMock(side_effect=ConnectionError("Network down"))
 
-        result = await run_genai_health_check(session, "sk-test-key", "snapshot")
+        result = await run_genai_health_check(session, "sk-or-test-key", "snapshot")
 
         assert result["status"] == "ERROR"
         assert "Network down" in result["summary"]
 
     @pytest.mark.asyncio
     async def test_sends_correct_headers(self):
-        """Verifies API key and version headers are sent."""
+        """Verifies Authorization Bearer header is sent."""
         api_response = {
-            "content": [
-                {"text": json.dumps({"status": "GREEN", "summary": "OK", "details": ""})}
+            "choices": [
+                {"message": {"content": json.dumps({"status": "GREEN", "summary": "OK", "details": ""})}}
             ]
         }
 
@@ -240,19 +244,19 @@ class TestRunGenaiHealthCheck:
         session = MagicMock()
         session.post = MagicMock(return_value=mock_resp)
 
-        await run_genai_health_check(session, "sk-my-key", "snapshot")
+        await run_genai_health_check(session, "sk-or-my-key", "snapshot")
 
         call_kwargs = session.post.call_args
         headers = call_kwargs.kwargs.get("headers") or call_kwargs[1].get("headers")
-        assert headers["x-api-key"] == "sk-my-key"
-        assert headers["anthropic-version"] == "2023-06-01"
+        assert headers["Authorization"] == "Bearer sk-or-my-key"
+        assert headers["content-type"] == "application/json"
 
     @pytest.mark.asyncio
     async def test_uses_correct_model(self):
-        """Verifies the haiku model is used."""
+        """Verifies the google/gemini-2.5-flash model is used via OpenRouter."""
         api_response = {
-            "content": [
-                {"text": json.dumps({"status": "GREEN", "summary": "OK", "details": ""})}
+            "choices": [
+                {"message": {"content": json.dumps({"status": "GREEN", "summary": "OK", "details": ""})}}
             ]
         }
 
@@ -265,12 +269,64 @@ class TestRunGenaiHealthCheck:
         session = MagicMock()
         session.post = MagicMock(return_value=mock_resp)
 
-        await run_genai_health_check(session, "sk-key", "snapshot")
+        await run_genai_health_check(session, "sk-or-key", "snapshot")
 
         call_kwargs = session.post.call_args
         payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
-        assert payload["model"] == "claude-haiku-4-5-20251001"
+        assert payload["model"] == "google/gemini-2.5-flash"
         assert payload["max_tokens"] == 300
+
+    @pytest.mark.asyncio
+    async def test_uses_openrouter_url(self):
+        """Verifies the OpenRouter API endpoint is called."""
+        api_response = {
+            "choices": [
+                {"message": {"content": json.dumps({"status": "GREEN", "summary": "OK", "details": ""})}}
+            ]
+        }
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value=api_response)
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        session = MagicMock()
+        session.post = MagicMock(return_value=mock_resp)
+
+        await run_genai_health_check(session, "sk-or-key", "snapshot")
+
+        call_args = session.post.call_args
+        url = call_args.args[0] if call_args.args else call_args.kwargs.get("url")
+        assert url == "https://openrouter.ai/api/v1/chat/completions"
+
+    @pytest.mark.asyncio
+    async def test_system_prompt_in_messages(self):
+        """Verifies system prompt is sent as a message (OpenAI format)."""
+        api_response = {
+            "choices": [
+                {"message": {"content": json.dumps({"status": "GREEN", "summary": "OK", "details": ""})}}
+            ]
+        }
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value=api_response)
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        session = MagicMock()
+        session.post = MagicMock(return_value=mock_resp)
+
+        await run_genai_health_check(session, "sk-or-key", "snapshot")
+
+        call_kwargs = session.post.call_args
+        payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        messages = payload["messages"]
+        assert messages[0]["role"] == "system"
+        assert messages[1]["role"] == "user"
+        # System prompt should NOT be a top-level key (Anthropic format)
+        assert "system" not in payload
 
 
 class TestCycleInterval:

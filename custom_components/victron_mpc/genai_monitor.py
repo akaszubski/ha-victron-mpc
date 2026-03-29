@@ -1,6 +1,6 @@
 """GenAI health monitor for Victron MPC Battery Optimizer.
 
-Calls the Anthropic Claude API hourly to reason about system health.
+Calls the OpenRouter API hourly to reason about system health.
 Catches subtle issues that deterministic checks miss -- the kind of
 problems a human would notice by looking at the numbers and thinking
 "this doesn't smell right."
@@ -89,34 +89,35 @@ async def run_genai_health_check(
     api_key: str,
     snapshot: str,
 ) -> dict[str, str]:
-    """Call Claude API to analyze system health.
+    """Call OpenRouter API to analyze system health.
 
     Args:
         session: aiohttp ClientSession for HTTP requests.
-        api_key: Anthropic API key.
+        api_key: OpenRouter API key.
         snapshot: Formatted data snapshot string.
 
     Returns:
         Dict with keys: status, summary, details.
     """
     if not api_key:
-        return {"status": "SKIP", "summary": "No Anthropic API key configured", "details": ""}
+        return {"status": "SKIP", "summary": "No OpenRouter API key configured", "details": ""}
 
     text = ""
     try:
         payload = {
-            "model": "claude-haiku-4-5-20251001",
+            "model": "google/gemini-2.5-flash",
             "max_tokens": 300,
-            "system": SYSTEM_PROMPT,
-            "messages": [{"role": "user", "content": f"Current system snapshot:\n\n{snapshot}"}],
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": f"Current system snapshot:\n\n{snapshot}"},
+            ],
         }
 
         async with session.post(
-            "https://api.anthropic.com/v1/messages",
+            "https://openrouter.ai/api/v1/chat/completions",
             json=payload,
             headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
+                "Authorization": f"Bearer {api_key}",
                 "content-type": "application/json",
             },
             timeout=30,
@@ -131,7 +132,7 @@ async def run_genai_health_check(
                 }
 
             data = await resp.json()
-            text = data["content"][0]["text"]
+            text = data["choices"][0]["message"]["content"]
 
             # Parse JSON response
             # Handle cases where Claude wraps in markdown code blocks

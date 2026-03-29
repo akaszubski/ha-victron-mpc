@@ -38,7 +38,7 @@ CONF_WEATHER_ENTITY = "weather_entity"
 
 CONF_VRM_TOKEN = "vrm_token"
 CONF_VRM_INSTALLATION_ID = "vrm_installation_id"
-CONF_ANTHROPIC_API_KEY = "anthropic_api_key"
+CONF_OPENROUTER_API_KEY = "openrouter_api_key"
 
 # Victron Modbus registers
 REGISTER_ESS_MIN_SOC = 2901  # value = SoC% × 10, range 100-1000
