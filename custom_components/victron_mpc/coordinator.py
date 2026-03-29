@@ -1121,6 +1121,9 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "solar_forecast_source", "unknown"
                 ),
                 "solar_day_type": forecasts.get("solar_day_type", "unknown"),
+                "solar_shading_ratios": [
+                    round(r, 2) for r in forecasts.get("solar_shading_ratios", [])
+                ],
                 "load_forecast_source": forecasts.get(
                     "load_forecast_source", "unknown"
                 ),
