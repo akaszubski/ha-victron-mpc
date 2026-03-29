@@ -1223,13 +1223,14 @@ class TestSolcastIntegration:
         result = fb._get_solcast_ha_forecast(now)
         assert result is None
 
-    async def test_solcast_derated_by_vrm_coefficient(
+    async def test_solcast_derated_by_per_hour_shading(
         self, hass: HomeAssistant, tunables: MPCTunables,
     ):
-        """Solcast derated by VRM shading coefficient.
+        """Solcast derated by per-hour VRM P90 shading ratios.
 
-        VRM best March day = 22 kWh, Solcast raw = 50.7 kWh
-        Coefficient = 22/50.7 = 0.43. All hours scaled uniformly.
+        VRM P90 envelope has low morning values (shading) and high
+        afternoon values. Solcast has a symmetric bell curve.
+        Morning hours should be derated more heavily than afternoon.
         """
         now = datetime(2026, 3, 18, 10, 0, tzinfo=timezone(timedelta(hours=11)))
         forecast_data = _make_solcast_detailed_forecast(now, peak_kw=7.0)
@@ -1239,34 +1240,43 @@ class TestSolcastIntegration:
             {"detailedForecast": forecast_data},
         )
 
+        # VRM P90 envelope: low morning (shaded), high afternoon
+        vrm_p90 = [0.0] * 24  # kW per hour
+        # Hours 0-7: zero (night + full shade)
+        # Hours 8-9: partial shade
+        vrm_p90[8] = 0.3
+        vrm_p90[9] = 0.8
+        # Hours 10-16: unshaded
+        for h in range(10, 17):
+            vrm_p90[h] = 3.5 + (h - 10) * 0.3 if h < 14 else 5.0 - (h - 14) * 0.5
+        # Hours 17-18: declining
+        vrm_p90[17] = 1.5
+        vrm_p90[18] = 0.5
+
         vrm = MagicMock()
         vrm.available = True
-        vrm.get_monthly_peak_kwh = AsyncMock(return_value={3: 22.0})
+        vrm.get_clearsky_envelope = AsyncMock(return_value={3: vrm_p90})
 
         fb = _builder(hass, tunables, vrm=vrm, entities=SOLCAST_ENTITIES)
         raw = fb._get_solcast_ha_forecast(now)
         assert raw is not None
 
-        derated, coefficient = await fb._derate_solcast_with_vrm(raw, now)
+        derated, coefficient = await fb._apply_per_hour_shading(raw, now)
 
-        # Coefficient should be < 1.0 (Solcast was reduced)
+        # Coefficient should be < 1.0 (morning shading pulls it down)
         assert coefficient < 1.0
-        # Total should be near VRM peak
+        # Total should be reduced
         derated_total = sum(derated) * tunables.dt_hours
-        assert derated_total < 25.0  # Below VRM peak + tolerance
-        # Shape preserved — relative proportions same
-        raw_peak = max(raw)
-        derated_peak = max(derated)
-        assert abs(derated_peak / raw_peak - coefficient) < 0.05
+        raw_total = sum(raw) * tunables.dt_hours
+        assert derated_total < raw_total
 
     async def test_solcast_cloudy_day_no_derate_needed(
         self, hass: HomeAssistant, tunables: MPCTunables,
     ):
-        """On a cloudy day, Solcast is already below VRM peak — no derate.
+        """On a cloudy day, Solcast is already below VRM P90 — no derate.
 
-        Solcast says 14.5 kWh (cloudy). VRM peak = 22 kWh.
-        Coefficient = 22/14.5 = 1.51 → capped to 1.0.
-        Solcast's cloud-aware forecast is already realistic.
+        When Solcast per-hour values are below VRM P90 per-hour,
+        all ratios are 1.0 (Solcast's cloud-aware forecast is realistic).
         """
         now = datetime(2026, 3, 18, 10, 0, tzinfo=timezone(timedelta(hours=11)))
         forecast_data = _make_solcast_detailed_forecast(now, peak_kw=2.0)
@@ -1276,17 +1286,23 @@ class TestSolcastIntegration:
             {"detailedForecast": forecast_data},
         )
 
+        # VRM P90 is much higher than cloudy Solcast
+        vrm_p90 = [0.0] * 24
+        for h in range(7, 19):
+            vrm_p90[h] = 4.0  # Clear sky capability
         vrm = MagicMock()
         vrm.available = True
-        vrm.get_monthly_peak_kwh = AsyncMock(return_value={3: 22.0})
+        vrm.get_clearsky_envelope = AsyncMock(return_value={3: vrm_p90})
 
         fb = _builder(hass, tunables, vrm=vrm, entities=SOLCAST_ENTITIES)
         raw = fb._get_solcast_ha_forecast(now)
-        derated, coefficient = await fb._derate_solcast_with_vrm(raw, now)
+        derated, coefficient = await fb._apply_per_hour_shading(raw, now)
 
-        # Cloudy day: Solcast < VRM peak → coefficient = 1.0 (no derate)
-        assert coefficient == 1.0
-        assert derated == raw  # Unchanged
+        # Cloudy day: Solcast < VRM P90 per hour → coefficient ~1.0
+        # May be slightly below 1.0 if early/late hours have VRM=0 and Solcast>0
+        assert coefficient >= 0.95
+        # Total should be very close to raw
+        assert sum(derated) >= sum(raw) * 0.95
 
     async def test_solcast_derate_no_vrm_available(
         self, hass: HomeAssistant, tunables: MPCTunables,
@@ -1302,9 +1318,87 @@ class TestSolcastIntegration:
 
         fb = _builder(hass, tunables, entities=SOLCAST_ENTITIES)  # No VRM
         raw = fb._get_solcast_ha_forecast(now)
-        derated, coefficient = await fb._derate_solcast_with_vrm(raw, now)
+        derated, coefficient = await fb._apply_per_hour_shading(raw, now)
 
         assert coefficient == 1.0  # No VRM → no derate
+
+    async def test_per_hour_shading_morning_heavy_afternoon_light(
+        self, hass: HomeAssistant, tunables: MPCTunables,
+    ):
+        """Morning hours get heavy shading, afternoon hours light."""
+        now = datetime(2026, 3, 18, 6, 0, tzinfo=timezone(timedelta(hours=11)))
+        forecast_data = _make_solcast_detailed_forecast(now, peak_kw=5.0)
+        hass.states.async_set(
+            "sensor.solcast_pv_forecast_forecast_today",
+            "30.0",
+            {"detailedForecast": forecast_data},
+        )
+
+        vrm_p90 = [0.0] * 24
+        # Shaded morning
+        vrm_p90[7] = 0.1  # fully shaded
+        vrm_p90[8] = 0.3
+        vrm_p90[9] = 0.5
+        vrm_p90[10] = 1.5
+        # Unshaded afternoon
+        for h in range(11, 17):
+            vrm_p90[h] = 4.5
+        vrm_p90[17] = 2.0
+        vrm_p90[18] = 0.5
+
+        vrm = MagicMock()
+        vrm.available = True
+        vrm.get_clearsky_envelope = AsyncMock(return_value={3: vrm_p90})
+
+        fb = _builder(hass, tunables, vrm=vrm, entities=SOLCAST_ENTITIES)
+        raw = fb._get_solcast_ha_forecast(now)
+        derated, coefficient = await fb._apply_per_hour_shading(raw, now)
+
+        sph = tunables.steps_per_hour
+        # Morning hour 8 (step index = 2 * sph, since starting at 6am)
+        morning_start = 2 * sph  # hour 8
+        morning_end = 3 * sph    # hour 9
+        morning_avg = sum(derated[morning_start:morning_end]) / sph
+        # Afternoon hour 13 (step index = 7 * sph)
+        afternoon_start = 7 * sph  # hour 13
+        afternoon_end = 8 * sph
+        afternoon_avg = sum(derated[afternoon_start:afternoon_end]) / sph
+
+        # Morning should be much lower than afternoon
+        if afternoon_avg > 0:
+            assert morning_avg / afternoon_avg < 0.3, (
+                f"Morning should be <30% of afternoon: "
+                f"{morning_avg:.1f} vs {afternoon_avg:.1f}"
+            )
+
+    async def test_per_hour_shading_fully_shaded_hours_zeroed(
+        self, hass: HomeAssistant, tunables: MPCTunables,
+    ):
+        """Hours where VRM P90 < 0.2kW are zeroed (fully shaded)."""
+        now = datetime(2026, 3, 18, 6, 0, tzinfo=timezone(timedelta(hours=11)))
+        forecast_data = _make_solcast_detailed_forecast(now, peak_kw=5.0)
+        hass.states.async_set(
+            "sensor.solcast_pv_forecast_forecast_today",
+            "30.0",
+            {"detailedForecast": forecast_data},
+        )
+
+        vrm_p90 = [0.0] * 24  # All zeros except noon
+        vrm_p90[12] = 4.0
+        vrm_p90[13] = 4.0
+
+        vrm = MagicMock()
+        vrm.available = True
+        vrm.get_clearsky_envelope = AsyncMock(return_value={3: vrm_p90})
+
+        fb = _builder(hass, tunables, vrm=vrm, entities=SOLCAST_ENTITIES)
+        raw = fb._get_solcast_ha_forecast(now)
+        derated, _ = await fb._apply_per_hour_shading(raw, now)
+
+        sph = tunables.steps_per_hour
+        # Hour 8 (offset 2 from 6am start): VRM = 0 → should be zeroed
+        for i in range(2 * sph, 3 * sph):
+            assert derated[i] == 0.0, f"Step {i} should be 0 (fully shaded)"
 
 
 # ===================================================================

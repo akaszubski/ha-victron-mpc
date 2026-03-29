@@ -513,6 +513,7 @@ class ForecastBuilder:
             "current_solar_w": current_solar_w,
             "current_load_w": current_load_w,
             "solar_forecast_source": solar_source,
+            "solar_shading_ratios": getattr(self, "_last_shading_ratios", []),
             "solar_day_type": day_type,
             "load_forecast_source": load_source,
             "seasonal_load_factor": round(seasonal_factor, 3),
@@ -981,116 +982,42 @@ class ForecastBuilder:
         )
         return solar_kw
 
-    async def _get_shading_coefficient(self, now: datetime) -> float:
-        """Compute fortnightly shading coefficient from VRM actual vs Solcast.
+    async def _get_per_hour_shading_ratios(
+        self, now: datetime, solcast_5min: list[float],
+    ) -> tuple[list[float], float]:
+        """Compute per-hour shading ratios from VRM P90 vs Solcast.
 
-        coefficient = VRM_best_day_in_fortnight / Solcast_clear_sky_equivalent
+        For each hour h:
+            vrm_p90_h = VRM P90 production for (this_month, hour_h)
+            solcast_h = average Solcast kW for that hour
+            ratio_h = min(1.0, vrm_p90_h / solcast_h)
 
-        VRM knows the best production day for the same 2-week window last year.
-        That day had the same sun angle, day length, and tree shadow pattern.
-        Solcast doesn't know about shading, so its clear-sky prediction is
-        higher. The ratio IS the shading factor.
+        This captures physical shading (trees, buildings) per hour and
+        per season. VRM P90 is built from 180 days of actual hourly
+        production grouped by (month, hour), so shading that moves with
+        sun angle is automatically tracked.
 
-        The coefficient changes with seasons:
-          Winter (Jun): ~0.45 (heavy shading, low sun)
-          Autumn/Spring (Mar/Sep): ~0.60
-          Summer (Dec): ~0.75-0.80 (high sun clears trees)
+        Shaded hours (VRM P90 < 0.2kW): ratio = 0.0
+        Unshaded hours: ratio = 0.85-0.95 (minor panel losses)
+        Nighttime (Solcast < 0.1kW): ratio = 1.0 (no correction)
 
-        Returns coefficient (0.0-1.0), or 1.0 if VRM unavailable.
+        Returns (ratios_24, avg_coefficient) where avg_coefficient is
+        production-weighted average for sensor display.
         """
         if not self._vrm or not self._vrm.available:
             _LOGGER.warning(
-                "Solcast used WITHOUT VRM shading coefficient — forecasts "
+                "Solcast used WITHOUT VRM shading ratios — forecasts "
                 "may be significantly over-estimated. Configure VRM API."
             )
-            return 1.0
-
-        monthly_peaks = await self._vrm.get_monthly_peak_kwh()
-        if not monthly_peaks:
-            _LOGGER.warning(
-                "VRM peak data unavailable — Solcast used without "
-                "shading coefficient this cycle"
-            )
-            return 1.0
-
-        month = now.month
-        vrm_peak = monthly_peaks.get(month)
-        if not vrm_peak or vrm_peak <= 0:
-            for offset in [1, -1, 2, -2]:
-                m = ((month - 1 + offset) % 12) + 1
-                vrm_peak = monthly_peaks.get(m)
-                if vrm_peak and vrm_peak > 0:
-                    break
-
-        if not vrm_peak or vrm_peak <= 0:
-            return 1.0
-
-        # Solcast clear-sky total for the raw forecast
-        solcast_total = sum(self._last_solcast_raw or []) * self.dt_hours
-        if solcast_total <= 0:
-            return 1.0
-
-        coefficient = min(1.0, vrm_peak / solcast_total)
-
-        _LOGGER.info(
-            "Shading coefficient: %.2f (VRM peak %.1fkWh / "
-            "Solcast raw %.1fkWh, month=%d)",
-            coefficient, vrm_peak, solcast_total, month,
-        )
-        return coefficient
-
-    async def _derate_solcast_with_vrm(
-        self, solar_kw: list[float], now: datetime,
-    ) -> tuple[list[float], float]:
-        """Apply fortnightly shading coefficient to Solcast forecast.
-
-        Simple scalar multiplication: forecast = solcast × coefficient.
-        Preserves Solcast's cloud-aware hourly shape while scaling the
-        total to match what this site actually produces.
-
-        Returns (derated_solar_kw, coefficient).
-        """
-        # Store raw for coefficient calculation
-        self._last_solcast_raw = solar_kw
-
-        coefficient = await self._get_shading_coefficient(now)
-        if coefficient >= 0.99:
-            return solar_kw, 1.0
-
-        derated = [kw * coefficient for kw in solar_kw]
-
-        _LOGGER.info(
-            "Solcast derated: %.1fkWh × %.2f = %.1fkWh "
-            "(shading coefficient for month %d)",
-            sum(solar_kw) * self.dt_hours,
-            coefficient,
-            sum(derated) * self.dt_hours,
-            now.month,
-        )
-        return derated, coefficient
-
-    async def _apply_hourly_shading_mask(
-        self, solar_kw: list[float], now: datetime,
-    ) -> list[float]:
-        """Apply VRM P90 hourly production ceiling to cap shaded hours.
-
-        The coefficient handles the daily total (Solcast × 0.65 = correct kWh).
-        This method handles the hourly SHAPE — capping each hour at what VRM
-        shows the site can physically produce at that hour in this month.
-
-        Shaded morning hours (VRM P90 < 0.2 kW) get zeroed out.
-        Partially shaded hours get capped at the VRM P90 value.
-        Unshaded hours pass through unchanged (coefficient already handled total).
-
-        This is derived from real production data, not hardcoded. VRM P90
-        captures the exact shading pattern for each hour, month, and season.
-        """
-        if not self._vrm or not self._vrm.available:
-            return solar_kw
+            return [1.0] * 24, 1.0
 
         envelope = await self._vrm.get_clearsky_envelope(percentile=0.90)
         if not envelope:
-            return solar_kw
+            _LOGGER.warning(
+                "VRM P90 envelope unavailable — Solcast used without "
+                "shading ratios this cycle"
+            )
+            return [1.0] * 24, 1.0
 
         month = now.month
         hourly_ceiling = envelope.get(month)
@@ -1102,39 +1029,103 @@ class ForecastBuilder:
                     break
 
         if not hourly_ceiling or sum(hourly_ceiling) <= 0:
-            return solar_kw
+            return [1.0] * 24, 1.0
 
-        # Reorder ceiling to start from current hour
+        # Reorder VRM ceiling to start from current hour
         current_hour = now.hour
         ceiling = hourly_ceiling[current_hour:] + hourly_ceiling[:current_hour]
 
-        # Apply per-hour cap
+        # Aggregate Solcast 5-min to hourly averages
         steps_per_hour = self._tunables.steps_per_hour
-        masked = []
-        zeroed_hours = 0
-
-        for i, kw in enumerate(solar_kw):
-            hour_idx = min(i // steps_per_hour, len(ceiling) - 1)
-            vrm_max = ceiling[hour_idx]
-            if vrm_max < 0.2:
-                # Fully shaded hour — zero regardless of Solcast
-                masked.append(0.0)
-                if kw > 0.01:
-                    zeroed_hours += 1
+        solcast_hourly = []
+        for h in range(24):
+            start = h * steps_per_hour
+            end = min(start + steps_per_hour, len(solcast_5min))
+            if start < len(solcast_5min):
+                hour_vals = solcast_5min[start:end]
+                solcast_hourly.append(
+                    sum(hour_vals) / len(hour_vals) if hour_vals else 0.0
+                )
             else:
-                # Cap at VRM P90 for this hour
-                masked.append(min(kw, vrm_max))
+                solcast_hourly.append(0.0)
 
-        if zeroed_hours > 0:
-            before = sum(solar_kw) * self.dt_hours
-            after = sum(masked) * self.dt_hours
-            _LOGGER.info(
-                "Hourly shading mask: %.1fkWh → %.1fkWh "
-                "(%d shaded hours zeroed, month=%d)",
-                before, after, zeroed_hours, month,
-            )
+        # Compute per-hour ratios
+        ratios = []
+        weighted_sum = 0.0
+        weight_total = 0.0
+        for h in range(24):
+            vrm_h = ceiling[h] if h < len(ceiling) else 0.0
+            sc_h = solcast_hourly[h]
 
-        return masked
+            if sc_h < 0.1:
+                # Nighttime or negligible solar — no correction needed
+                ratios.append(1.0)
+            elif vrm_h < 0.2:
+                # Fully shaded hour — VRM shows zero production
+                ratios.append(0.0)
+            else:
+                ratio = min(1.0, vrm_h / sc_h)
+                ratios.append(ratio)
+
+            # Production-weighted average
+            if sc_h > 0.1:
+                weighted_sum += sc_h * ratios[-1]
+                weight_total += sc_h
+
+        avg_coeff = weighted_sum / weight_total if weight_total > 0 else 1.0
+
+        # Log key daylight hours
+        log_hours = []
+        for h in range(24):
+            abs_hour = (current_hour + h) % 24
+            if 6 <= abs_hour <= 18 and solcast_hourly[h] > 0.1:
+                log_hours.append(f"{abs_hour}h={ratios[h]:.2f}")
+        _LOGGER.info(
+            "Per-hour shading (month=%d, avg=%.2f): %s",
+            month, avg_coeff,
+            ", ".join(log_hours) if log_hours else "no daylight",
+        )
+
+        return ratios, avg_coeff
+
+    async def _apply_per_hour_shading(
+        self, solar_kw: list[float], now: datetime,
+    ) -> tuple[list[float], float]:
+        """Apply per-hour VRM-derived shading ratios to Solcast forecast.
+
+        Replaces both the old flat coefficient and the binary hourly mask.
+        Each 5-min timestep is scaled by its hour's shading ratio, which
+        captures physical shading (trees/buildings) that varies by hour
+        and season.
+
+        Returns (shaded_solar_kw, avg_coefficient_for_display).
+        """
+        self._last_solcast_raw = solar_kw
+
+        ratios, avg_coeff = await self._get_per_hour_shading_ratios(
+            now, solar_kw,
+        )
+        self._last_shading_ratios = ratios
+
+        if avg_coeff >= 0.99:
+            return solar_kw, 1.0
+
+        # Expand 24 hourly ratios to 288 five-min steps
+        steps_per_hour = self._tunables.steps_per_hour
+        shaded = []
+        for i, kw in enumerate(solar_kw):
+            hour_idx = min(i // steps_per_hour, len(ratios) - 1)
+            shaded.append(kw * ratios[hour_idx])
+
+        before_kwh = sum(solar_kw) * self.dt_hours
+        after_kwh = sum(shaded) * self.dt_hours
+        _LOGGER.info(
+            "Solcast shading applied: %.1fkWh → %.1fkWh "
+            "(avg coefficient %.2f, month=%d)",
+            before_kwh, after_kwh, avg_coeff, now.month,
+        )
+
+        return shaded, avg_coeff
 
     async def _build_solar_forecast(
         self, now: datetime, current_solar_w: float,
@@ -1170,14 +1161,7 @@ class ForecastBuilder:
         if solar_kw is None:
             solcast_forecast = self._get_solcast_ha_forecast(now)
             if solcast_forecast is not None:
-                solcast_forecast, coefficient = await self._derate_solcast_with_vrm(
-                    solcast_forecast, now,
-                )
-                # Zero out hours where VRM shows site is fully shaded.
-                # VRM P90 < 0.2 kW means even the best day produced nothing
-                # at that hour — trees/buildings block all solar regardless
-                # of weather. Solcast doesn't know this.
-                solcast_forecast = await self._apply_hourly_shading_mask(
+                solcast_forecast, coefficient = await self._apply_per_hour_shading(
                     solcast_forecast, now,
                 )
                 solar_kw = solcast_forecast
