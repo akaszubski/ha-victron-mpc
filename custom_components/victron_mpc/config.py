@@ -19,8 +19,8 @@ class VictronSystem:
     """Physical system parameters for Victron ESS."""
 
     battery_capacity_kwh: float = 14.2  # 296Ah @ 48V
-    max_charge_kw: float = 3.5  # Max grid → battery charge rate (Quattro limit)
-    max_discharge_kw: float = 4.5  # Max battery → load discharge rate
+    max_charge_kw: float = 7.1  # 4× Pylontech Force-L2 @ 37A each = 7.1kW
+    max_discharge_kw: float = 7.1  # 4× Pylontech Force-L2 @ 37A each = 7.1kW
     max_solar_kw: float = 7.0  # PV array peak
     max_grid_import_kw: float = 10.0  # Main breaker limit
     max_grid_export_kw: float = 5.0  # Feed-in limit
