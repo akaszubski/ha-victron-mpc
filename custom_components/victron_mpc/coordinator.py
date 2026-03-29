@@ -34,6 +34,7 @@ from .const import (
     CONF_VRM_TOKEN,
     DOMAIN,
     LOGGER,
+    REGISTER_BATTERYLIFE_STATE,
     REGISTER_ESS_MIN_SOC,
     REGISTER_FEEDIN_BLOCK,
     REGISTER_MAX_FEED_IN,
@@ -197,10 +198,11 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         shadow_mode = self.entry.options.get("shadow_mode", True)
         if not shadow_mode:
             try:
+                await self._write_batterylife_register()
                 soc_floor = int(self.entry.data.get("soc_floor_pct", 20))
                 await self._write_register(soc_floor * 10)
                 LOGGER.info(
-                    "Fast startup: R2901=%d (safe floor until first cycle)",
+                    "Fast startup: R2900=12 (BL disabled), R2901=%d (safe floor until first cycle)",
                     soc_floor * 10,
                 )
             except Exception:
@@ -427,6 +429,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # ----------------------------------------------------------
             shadow_mode = self.entry.options.get("shadow_mode", True)
             if not shadow_mode:
+                await self._write_batterylife_register()
                 await self._write_register(target_register)
                 await self._write_feedin_register(feedin_value)
             else:
@@ -459,6 +462,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     max(tunables.soc_floor_pct, system.soc_min_pct) * 10
                 )
                 if not shadow_mode:
+                    await self._write_batterylife_register()
                     await self._write_register(floor_register)
                     target_register = floor_register
                     LOGGER.info(
@@ -1198,6 +1202,34 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception:
             LOGGER.exception("Failed to write R2706=%d", value)
             await self._modbus_write_failure()
+
+    async def _write_batterylife_register(self) -> None:
+        """Write ESS BatteryLife state register (R2900) to disable BatteryLife.
+
+        Value 12 = BatteryLife disabled + discharging. This prevents the
+        Cerbo GX BatteryLife algorithm from overwriting R2901 with its own
+        calculated min SoC (which can be ABOVE current SoC, causing unwanted
+        grid charging).
+
+        Must be written every cycle -- Cerbo may reset R2900 after reboot.
+
+        Bug discovered 2026-03-30: BatteryLife was silently overwriting R2901
+        every ~15 seconds, setting it above SoC, causing 500W+ grid import
+        while MPC reported 'discharge' mode.
+        """
+        try:
+            await self.hass.services.async_call(
+                "modbus",
+                "write_register",
+                {
+                    "hub": self.entry.data.get("modbus_hub", "cerbo"),
+                    "unit": self.entry.data.get("modbus_slave_system", 100),
+                    "address": REGISTER_BATTERYLIFE_STATE,
+                    "value": 12,
+                },
+            )
+        except Exception:
+            LOGGER.exception("Failed to write R2900=12 (BatteryLife disable)")
 
 
 # ======================================================================

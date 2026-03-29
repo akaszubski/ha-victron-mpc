@@ -42,6 +42,7 @@ CONF_VRM_INSTALLATION_ID = "vrm_installation_id"
 # Victron Modbus registers
 REGISTER_ESS_MIN_SOC = 2901  # value = SoC% × 10, range 100-1000
 REGISTER_MAX_FEED_IN = 2706  # units = 100W/value (70 = 7000W, 0 = block)
+REGISTER_BATTERYLIFE_STATE = 2900  # ESS BatteryLife state — 12 = BL disabled + discharging
 
 # Register ranges
 REGISTER_ESS_MIN = 100  # 10% SoC
