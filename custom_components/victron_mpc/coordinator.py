@@ -41,6 +41,7 @@ from .const import (
     UPDATE_INTERVAL_MINUTES,
 )
 from .forecasts import ForecastBuilder
+from .genai_monitor import GENAI_CYCLE_INTERVAL, build_health_snapshot, run_genai_health_check
 from .optimizer import OptInput, OptOutput, compute_sunset_target, optimize
 from .utils import scale_overnight_hold_reward
 
@@ -157,6 +158,10 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Amber forecast accuracy tracking — rolling 7-day log
         # Each entry: {timestamp, forecast_prices: {+1h, +2h, +3h, +6h}, actual_price, spike_predicted, spike_actual}
         self._amber_forecast_log: list[dict[str, Any]] = []
+
+        # GenAI health monitor state
+        self._genai_cycle_count = 0
+        self._last_genai_result: dict[str, str] = {}
         self._amber_forecast_log_max = 2016  # 7 days × 288 cycles/day
 
     async def _async_setup(self) -> None:
@@ -494,6 +499,60 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._log_amber_forecast(forecasts)
 
             # ----------------------------------------------------------
+            # Phase 7e: GenAI health monitor (hourly)
+            # ----------------------------------------------------------
+            self._genai_cycle_count += 1
+            if self._genai_cycle_count >= GENAI_CYCLE_INTERVAL:
+                self._genai_cycle_count = 0
+                api_key = self.entry.data.get(
+                    "anthropic_api_key", ""
+                ) or self.entry.options.get("anthropic_api_key", "")
+                if api_key:
+                    extra = {
+                        "r2901_readback_pct": self._get_r2901_readback(),
+                        "r2900": self._get_r2900(),
+                        "r37_setpoint_w": self._get_r37_setpoint(),
+                        "grid_import_w": grid_import_w,
+                        "grid_export_w": self._get_grid_export(),
+                        "weather": forecasts.get("weather_condition", "unknown"),
+                        "solar_yield_kwh": self._get_solar_yield(),
+                    }
+                    snapshot = build_health_snapshot(
+                        coordinator_data=self._build_sensor_data(
+                            result=result,
+                            forecasts=forecasts,
+                            tunables=tunables,
+                            target_register=target_register,
+                            feedin_value=feedin_value,
+                            mode=mode,
+                            override_reason=override_reason,
+                            is_spike=is_spike,
+                            shadow_mode=shadow_mode,
+                            buy_price_now=buy_price_now,
+                            sell_price_now=sell_price_now,
+                            forecast_builder=forecast_builder,
+                        ),
+                        extra=extra,
+                    )
+                    session = async_get_clientsession(self.hass)
+                    genai_result = await run_genai_health_check(
+                        session, api_key, snapshot,
+                    )
+                    self._last_genai_result = genai_result
+                    LOGGER.info(
+                        "GenAI health: %s -- %s",
+                        genai_result.get("status", "?"),
+                        genai_result.get("summary", ""),
+                    )
+                    if genai_result.get("status") == "RED":
+                        await self._notify(
+                            "MPC GenAI Alert: System Issue Detected",
+                            f"{genai_result.get('summary', 'Unknown issue')}\n\n"
+                            f"{genai_result.get('details', '')}",
+                            notification_id="mpc_genai_alert",
+                        )
+
+            # ----------------------------------------------------------
             # Phase 8: Build data dict for sensor entities
             # ----------------------------------------------------------
             return self._build_sensor_data(
@@ -633,6 +692,60 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except (ValueError, TypeError):
                 pass
         return 0.0
+
+    def _get_r2901_readback(self) -> float:
+        """Read R2901 from the Modbus sensor."""
+        try:
+            state = self.hass.states.get(
+                "sensor.victron_ess_minimum_soc_unless_grid_fails"
+            )
+            if state and state.state not in ("unknown", "unavailable"):
+                return float(state.state)
+            return -1
+        except (ValueError, AttributeError):
+            return -1
+
+    def _get_r2900(self) -> int:
+        """Read R2900 (ESS mode) from the Modbus sensor."""
+        try:
+            state = self.hass.states.get("sensor.victron_ess_mode")
+            if state and state.state not in ("unknown", "unavailable"):
+                return int(float(state.state))
+            return -1
+        except (ValueError, AttributeError):
+            return -1
+
+    def _get_r37_setpoint(self) -> int:
+        """Read R37 ESS power setpoint."""
+        try:
+            state = self.hass.states.get(
+                "sensor.victron_ess_power_setpoint_phase_1"
+            )
+            if state and state.state not in ("unknown", "unavailable"):
+                return int(float(state.state))
+            return 0
+        except (ValueError, AttributeError):
+            return 0
+
+    def _get_grid_export(self) -> int:
+        """Read grid export power."""
+        try:
+            state = self.hass.states.get("sensor.victron_grid_export")
+            if state and state.state not in ("unknown", "unavailable"):
+                return int(float(state.state))
+            return 0
+        except (ValueError, AttributeError):
+            return 0
+
+    def _get_solar_yield(self) -> float:
+        """Read today's solar yield."""
+        try:
+            state = self.hass.states.get("sensor.solar_yield_today")
+            if state and state.state not in ("unknown", "unavailable"):
+                return float(state.state)
+            return 0.0
+        except (ValueError, AttributeError):
+            return 0.0
 
     def _is_genset_active(self) -> bool:
         """Check if genset is running (AC Input 2).
@@ -1139,6 +1252,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "modbus_healthy": self.modbus_healthy,
             "modbus_failures": self._modbus_consecutive_failures,
             "amber_forecast_log_entries": len(self._amber_forecast_log),
+            "genai_health": self._last_genai_result,
         }
 
     # ------------------------------------------------------------------

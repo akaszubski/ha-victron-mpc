@@ -11,6 +11,7 @@ automations and dashboards already reference.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -124,6 +125,19 @@ SENSOR_DESCRIPTIONS: tuple[VictronMPCSensorDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:timer-outline",
     ),
+    VictronMPCSensorDescription(
+        key="mpc_genai_health",
+        attr_key="genai_health",
+        translation_key="genai_health",
+        icon="mdi:robot",
+        attributes_fn=lambda data: {
+            "summary": data.get("summary", ""),
+            "details": data.get("details", ""),
+            "last_check": datetime.now().isoformat(),
+        }
+        if isinstance(data, dict)
+        else {},
+    ),
 )
 
 
@@ -178,6 +192,10 @@ class VictronMPCSensor(CoordinatorEntity[VictronMPCCoordinator], SensorEntity):
             return None
         data = self.coordinator.data.get(self.entity_description.attr_key)
         if isinstance(data, dict):
+            # If attributes_fn is set, the dict IS the raw data and
+            # the state is extracted by convention (e.g. "status" for genai_health).
+            if self.entity_description.attributes_fn is not None:
+                return data.get("status") or data.get("state")
             return data.get("state")
         return data
 
@@ -192,5 +210,7 @@ class VictronMPCSensor(CoordinatorEntity[VictronMPCCoordinator], SensorEntity):
             return None
         data = self.coordinator.data.get(self.entity_description.attr_key)
         if isinstance(data, dict):
+            if self.entity_description.attributes_fn is not None:
+                return self.entity_description.attributes_fn(data)
             return {k: v for k, v in data.items() if k != "state"}
         return None
