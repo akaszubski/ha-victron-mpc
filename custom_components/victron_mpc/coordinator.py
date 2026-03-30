@@ -513,8 +513,12 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Phase 7e: GenAI health monitor (hourly)
             # ----------------------------------------------------------
             self._genai_cycle_count += 1
-            if self._genai_cycle_count >= GENAI_CYCLE_INTERVAL:
-                self._genai_cycle_count = 0
+            # Fire on first cycle (immediate after startup) then every 12th
+            is_first_cycle = (self._genai_cycle_count == 1)
+            is_hourly_cycle = (self._genai_cycle_count >= GENAI_CYCLE_INTERVAL)
+            if is_first_cycle or is_hourly_cycle:
+                if is_hourly_cycle:
+                    self._genai_cycle_count = 0
                 api_key = self.entry.data.get(
                     "openrouter_api_key", ""
                 ) or self.entry.options.get("openrouter_api_key", "")
