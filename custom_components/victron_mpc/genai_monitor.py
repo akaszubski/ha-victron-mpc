@@ -98,9 +98,10 @@ the overall strategy makes sense.
 3. FULL BY SUNSET: Battery must reach 95%+ before sunset to cover the expensive evening \
    peak (5-9pm, $0.27-0.30/kWh). Missing sunset target means buying peak power from grid.
 
-4. EXPLOIT PRICE DIFFERENCES: Charge during overnight/midday lows ($0.10-0.17), discharge \
-   during morning ($0.25-0.30) and evening ($0.27-0.30) peaks. Export during spikes \
-   when feed-in tariff makes it profitable. Charge when paid to consume (negative pricing).
+4. EXPLOIT PRICE DIFFERENCES: Charge when grid is cheap relative to the day's average, \
+   discharge when expensive. Export during spikes when feed-in tariff exceeds battery wear + \
+   recharge cost. Charge when paid to consume (negative pricing). The LP handles the math — \
+   the GenAI checks whether the strategy direction makes sense.
 
 5. PROTECT THE BATTERY: 30% overnight floor (emergency reserve + genset start buffer). \
    Cell balancing full charge every 14 days. Don't cycle unnecessarily — wear cost is real.
@@ -134,12 +135,20 @@ the overall strategy makes sense.
 - If grid export >50W during non-export mode, feed-in register may be wrong. YELLOW.
 
 ## Price & Cost Efficiency
-- Buy price > $0.25: discharge expected (battery saves money)
-- Buy price $0.10-0.25: discharge or hold depending on SoC and solar forecast
-- Buy price < $0.10: grid_charge may be sensible (cheap to charge)
-- Buy price < $0: grid_charge expected (paid to consume)
-- Discharging during very cheap prices (<$0.08) is wasteful. YELLOW.
-- Grid-charging during expensive prices (>$0.30) is wrong unless spike anticipated. RED.
+- Use AMBER BANDS as the primary price signal — they are seasonally adjusted and reflect \
+  where the current price sits relative to the market. Bands: extremely_low, very_low, low, \
+  neutral, high, spike.
+- extremely_low / very_low: should be charging (grid_charge_boost kicks in). If NOT charging \
+  during extremely_low, opportunity is being missed. YELLOW.
+- low: hold or gentle discharge is fine. Charging is sensible if evening is forecast expensive.
+- neutral: discharge from battery is normal — saving vs buying later.
+- high: discharge expected — battery is saving significant money.
+- spike (>$1/kWh): aggressive discharge + export if FIT profitable. If NOT discharging, RED.
+- negative (<$0): must be grid-charging (paid to consume). If not charging, RED.
+- In winter, ALL bands shift up. Charging at "low" ($0.25) to survive "high" ($0.50) evening \
+  is correct — don't flag this. The bands handle the seasonal adjustment.
+- The LP optimizes across 24h — it sees future prices. The GenAI checks whether the strategy \
+  direction aligns with the band, not the absolute dollar amount.
 
 ## Solar Insurance (Shading Gap)
 - Solar is shaded by trees until ~11am. During 09:00-11:30 with low solar (<300W):
@@ -175,9 +184,10 @@ the overall strategy makes sense.
 - Negative pricing (<$0): should grid-charge (paid to consume). R2901 should be high, R2706=70.
 
 ## Amber Band Logic
-- extremely_low/very_low bands: grid_charge_boost ($0.15) added to reward — encourages charging.
-- low band: half boost ($0.075).
-- If extremely_low price and NOT charging, opportunity may be missed. YELLOW.
+- extremely_low/very_low bands: grid_charge_boost added to SoC reward — encourages charging. \
+  The boost is a tunable that adapts with the SoC profile.
+- low band: half boost applied.
+- These boosts work WITH the LP's 24h optimization, not against it.
 
 ## SoC Profile Economics
 - Pre-peak reward ($0.20) must exceed grid cost ($0.15 + $0.02 penalty = $0.17) for LP to grid-charge.
