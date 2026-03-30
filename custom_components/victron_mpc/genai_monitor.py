@@ -166,15 +166,10 @@ the overall strategy makes sense.
 - R2900 (ESS BatteryLife State): MUST be 10 or 12 (BL disabled). \
   If 2 = BatteryLife active (overriding MPC). If 9 = Keep Charged (grid charging at max rate). \
   Either is CRITICAL RED.
-- R2901 (ESS Min SoC) — HOW IT WORKS: R2901 is a FLOOR. The ESS discharges WHILE SoC is \
-  ABOVE R2901, and stops when SoC reaches R2901. Therefore: \
-  CORRECT: R2901 < SoC during discharge/hold/solar_charge (battery can discharge to the floor). \
-  CORRECT: R2901 > SoC during grid_charge (ESS charges FROM GRID to reach the register value). \
-  WRONG: R2901 >= SoC during discharge/hold/solar_charge = ESS thinks it needs to grid-charge. RED. \
-  The register changes every 5-min LP cycle. Readback may differ from written by 3-5% due to \
-  Modbus timing — this is NORMAL and NOT a problem. Only flag if readback is >10% different \
-  AND the system is behaving incorrectly (e.g. grid importing during discharge). \
-  Do NOT flag R2901 being below SoC during discharge — that is exactly how it should work.
+- R2901 (ESS Min SoC): R2901 is a floor — ESS discharges while SoC > R2901, charges from grid \
+  when SoC < R2901. Only RED condition: R2901 readback >= current SoC during non-grid-charge \
+  mode (discharge/hold/solar_charge) — means ESS is unintentionally grid-charging. \
+  All other R2901 values are normal operation. IGNORE written-vs-readback differences.
 - R2700 (Grid Setpoint): should be ~50W. If 0, ESS oscillates into small exports. YELLOW.
 - R37 (Power Setpoint): should be ~50W during discharge. If >200W during discharge, ESS is \
   importing from grid instead of using battery. RED.
