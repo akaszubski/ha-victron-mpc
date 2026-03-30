@@ -225,7 +225,7 @@ async def run_genai_health_check(
     text = ""
     try:
         payload = {
-            "model": "anthropic/claude-haiku-4-5-20251001",
+            "model": "anthropic/claude-haiku-4.5",
             "max_tokens": 300,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
