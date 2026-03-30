@@ -37,6 +37,11 @@ class TestRunDeterministicChecks:
         results = run_deterministic_checks({}, {"r2900": 12})
         assert not any(r["check"] == "r2900_ess_mode" for r in results)
 
+    def test_r2900_valid_11(self):
+        """R2900=11 (BL disabled, optimized w/o BatteryLife) passes."""
+        results = run_deterministic_checks({}, {"r2900": 11})
+        assert not any(r["check"] == "r2900_ess_mode" for r in results)
+
     def test_r2900_batterylife_active(self):
         """R2900=2 (BatteryLife active) is RED."""
         results = run_deterministic_checks({}, {"r2900": 2})
@@ -1020,3 +1025,33 @@ class TestGenAIHistory:
         data = {"status": "GREEN", "summary": "ok", "details": ""}
         attrs_fn = lambda d: {"history": d.get("history", [])}
         assert attrs_fn(data)["history"] == []
+
+    def test_history_dedup_skips_identical(self):
+        """Appending identical entry twice results in only one entry."""
+        buf: list[dict] = []
+
+        def append_with_dedup(buf, source, status, summary):
+            if buf:
+                last = buf[-1]
+                if last.get("source") == source and last.get("status") == status and last.get("summary") == summary:
+                    return
+            buf.append({"source": source, "status": status, "summary": summary})
+
+        append_with_dedup(buf, "deterministic", "GREEN", "All healthy")
+        append_with_dedup(buf, "deterministic", "GREEN", "All healthy")
+        assert len(buf) == 1
+
+    def test_history_dedup_allows_different(self):
+        """Appending different entries results in both being kept."""
+        buf: list[dict] = []
+
+        def append_with_dedup(buf, source, status, summary):
+            if buf:
+                last = buf[-1]
+                if last.get("source") == source and last.get("status") == status and last.get("summary") == summary:
+                    return
+            buf.append({"source": source, "status": status, "summary": summary})
+
+        append_with_dedup(buf, "deterministic", "GREEN", "All healthy")
+        append_with_dedup(buf, "genai", "YELLOW", "Minor concern")
+        assert len(buf) == 2

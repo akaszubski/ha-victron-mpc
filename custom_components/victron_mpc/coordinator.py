@@ -777,6 +777,12 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         grid_import_w: int,
     ) -> None:
         """Append health check result to rolling history buffer."""
+        # Deduplicate: skip if same as last entry
+        if self._genai_history:
+            last = self._genai_history[-1]
+            if last.get("source") == source and last.get("status") == status and last.get("summary") == summary:
+                return
+
         self._genai_history.append({
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "source": source,

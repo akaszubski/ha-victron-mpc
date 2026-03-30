@@ -109,12 +109,12 @@ def run_deterministic_checks(
     # 1. R2900 not in (10, 12) and not -1 (unavailable)
     try:
         r2900 = fields["r2900"]
-        if r2900 != -1 and r2900 not in (10, 12):
+        if r2900 != -1 and r2900 not in (10, 11, 12):
             results.append({
                 "check": "r2900_ess_mode",
                 "status": "RED",
                 "reason": (
-                    f"R2900 ESS mode is {r2900} (expected 10 or 12). "
+                    f"R2900 ESS mode is {r2900} (expected 10, 11, or 12). "
                     f"BatteryLife may be overriding MPC."
                 ),
             })
