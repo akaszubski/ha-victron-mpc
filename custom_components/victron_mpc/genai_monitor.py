@@ -169,10 +169,14 @@ the overall strategy makes sense.
 - R2901 (ESS Min SoC): ENCODING: register value = SoC% x 10 (e.g., 290 = 29.0%, 300 = 30%, \
   800 = 80%, 1000 = 100%). The "Target Register (R2901 written)" field shows the raw register \
   value; "R2901 Readback" shows the percentage. To compare: divide written value by 10, then \
-  compare to readback %. They must match within 2%. \
-  If different, something is overriding (BatteryLife or rogue process). RED.
+  compare to readback %. Readback should be close to target register. The register changes \
+  every 5-min cycle and the Modbus sensor polls independently, so 3-5% timing jitter is NORMAL. \
+  Only flag if: (a) readback is >10% different from target AND persists, or (b) readback is \
+  ABOVE current SoC during non-grid-charge mode (this is the dangerous condition — it causes \
+  grid charging). Small mismatches during normal discharge are timing noise, not overrides.
 - R2901 must be BELOW SoC during discharge/hold/solar_charge. \
-  If R2901 >= SoC and mode is NOT grid_charge, system is grid-charging unintentionally. RED.
+  If R2901 readback >= SoC and mode is NOT grid_charge, system is grid-charging unintentionally. \
+  THIS is the critical register check — not small mismatches between written and readback values. RED.
 - R2700 (Grid Setpoint): should be ~50W. If 0, ESS oscillates into small exports. YELLOW.
 - R37 (Power Setpoint): should be ~50W during discharge. If >200W during discharge, ESS is \
   importing from grid instead of using battery. RED.
