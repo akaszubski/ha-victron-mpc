@@ -294,7 +294,7 @@ class TestRunGenaiHealthCheck:
 
     @pytest.mark.asyncio
     async def test_uses_correct_model(self):
-        """Verifies the google/gemini-2.5-flash model is used via OpenRouter."""
+        """Verifies the anthropic/claude-haiku-4-5-20251001 model is used via OpenRouter."""
         api_response = {
             "choices": [
                 {"message": {"content": json.dumps({"status": "GREEN", "summary": "OK", "details": ""})}}
@@ -314,7 +314,7 @@ class TestRunGenaiHealthCheck:
 
         call_kwargs = session.post.call_args
         payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
-        assert payload["model"] == "google/gemini-2.5-flash"
+        assert payload["model"] == "anthropic/claude-haiku-4-5-20251001"
         assert payload["max_tokens"] == 300
 
     @pytest.mark.asyncio
