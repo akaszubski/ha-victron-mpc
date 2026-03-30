@@ -172,6 +172,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # GenAI health monitor state
         self._genai_cycle_count = 0
         self._last_genai_result: dict[str, str] = {}
+        self._genai_consecutive_red = 0
         self._amber_forecast_log_max = 2016  # 7 days × 288 cycles/day
 
     async def _async_setup(self) -> None:
@@ -561,18 +562,31 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         session, api_key, snapshot,
                     )
                     self._last_genai_result = genai_result
+                    status = genai_result.get("status", "?")
                     LOGGER.info(
                         "GenAI health: %s -- %s",
-                        genai_result.get("status", "?"),
+                        status,
                         genai_result.get("summary", ""),
                     )
-                    if genai_result.get("status") == "RED":
-                        await self._notify(
-                            "MPC GenAI Alert: System Issue Detected",
-                            f"{genai_result.get('summary', 'Unknown issue')}\n\n"
-                            f"{genai_result.get('details', '')}",
-                            notification_id="mpc_genai_alert",
-                        )
+                    if status == "RED":
+                        self._genai_consecutive_red += 1
+                        if self._genai_consecutive_red >= 2:
+                            await self._notify(
+                                "MPC GenAI Alert: Persistent Issue Detected",
+                                f"RED for {self._genai_consecutive_red} consecutive checks.\n\n"
+                                f"{genai_result.get('summary', 'Unknown issue')}\n\n"
+                                f"{genai_result.get('details', '')}",
+                                notification_id="mpc_genai_alert",
+                            )
+                        else:
+                            LOGGER.info("GenAI RED (1st occurrence) — will alert if persistent")
+                    else:
+                        if self._genai_consecutive_red > 0:
+                            LOGGER.info(
+                                "GenAI cleared after %d consecutive RED",
+                                self._genai_consecutive_red,
+                            )
+                        self._genai_consecutive_red = 0
 
             # ----------------------------------------------------------
             # Phase 8: Build data dict for sensor entities
