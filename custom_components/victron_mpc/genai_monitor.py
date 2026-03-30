@@ -1,11 +1,17 @@
 """GenAI health monitor for Victron MPC Battery Optimizer.
 
-Calls the OpenRouter API hourly to reason about system health.
-Catches subtle issues that deterministic checks miss -- the kind of
-problems a human would notice by looking at the numbers and thinking
-"this doesn't smell right."
+Two-layer architecture:
 
-Runs every 12th coordinator cycle (5 min x 12 = 60 min).
+Layer 1 (Deterministic): Pure Python checks every 5-min cycle. No LLM.
+    Catches all RED conditions — register mismatches, grid anomalies,
+    rogue processes, safety violations.
+
+Layer 2 (Strategic GenAI): Hourly LLM call with strategic context only.
+    Reviews mode, SoC trajectory, pricing strategy. Never returns RED.
+    Deterministic checks handle all critical issues.
+
+Runs every 12th coordinator cycle (5 min x 12 = 60 min) for GenAI layer.
+Deterministic checks run every cycle.
 """
 
 from __future__ import annotations
@@ -17,15 +23,263 @@ from typing import Any
 
 _LOGGER = logging.getLogger(__name__)
 
-# Cycle counter -- run every 12th cycle (hourly)
+# Cycle counter -- GenAI runs every 12th cycle (hourly)
 GENAI_CYCLE_INTERVAL = 12
 
 
+# ---------------------------------------------------------------------------
+# Layer 1: Deterministic checks (every cycle, no LLM)
+# ---------------------------------------------------------------------------
+
+def _extract_fields(
+    coordinator_data: dict[str, Any],
+    extra: dict[str, Any],
+) -> dict[str, Any]:
+    """Extract fields from coordinator data, handling nested and flat formats.
+
+    Production coordinator returns nested dicts (decision.state, decision.battery_soc_pct).
+    Tests may pass flat dicts (mode, battery_soc_pct at top level).
+
+    Returns:
+        Dict with normalized field names for deterministic checks.
+    """
+    decision = coordinator_data.get("decision", {})
+    if isinstance(decision, dict) and "state" in decision:
+        mode = decision.get("state", "unknown")
+        soc_pct = decision.get("battery_soc_pct", None)
+        shadow_mode = decision.get("shadow_mode", False)
+        grid_import_w = decision.get("grid_import_w", extra.get("grid_import_w", 0))
+        schedule = decision.get("schedule_30min", "")
+    else:
+        mode = coordinator_data.get("mode", "unknown")
+        soc_pct = coordinator_data.get("battery_soc_pct", None)
+        shadow_mode = coordinator_data.get("shadow_mode", False)
+        grid_import_w = extra.get("grid_import_w", coordinator_data.get("grid_import_w", 0))
+        schedule = coordinator_data.get("schedule_30min", "")
+
+    # Buy price (may be nested dict or scalar)
+    buy_price_raw = coordinator_data.get("buy_price", None)
+    if isinstance(buy_price_raw, dict):
+        buy_price = buy_price_raw.get("state", None)
+    else:
+        buy_price = buy_price_raw
+
+    # Solar forecast (may be nested dict or scalar)
+    solar_raw = coordinator_data.get("solar_forecast_today", None)
+    if isinstance(solar_raw, dict):
+        solar_forecast = solar_raw.get("state", None)
+    else:
+        solar_forecast = solar_raw
+
+    return {
+        "mode": mode,
+        "soc_pct": soc_pct,
+        "shadow_mode": shadow_mode,
+        "grid_import_w": grid_import_w,
+        "schedule": schedule,
+        "buy_price": buy_price,
+        "solar_forecast": solar_forecast,
+        "r2900": extra.get("r2900", -1),
+        "r2901_readback_pct": extra.get("r2901_readback_pct", -1),
+        "mac_runner_found": extra.get("mac_runner_found", False),
+        "yaml_automations_on": extra.get("yaml_automations_on", []),
+        "amber_band": extra.get("amber_band", ""),
+    }
+
+
+def run_deterministic_checks(
+    coordinator_data: dict[str, Any],
+    extra: dict[str, Any],
+) -> list[dict[str, str]]:
+    """Run deterministic health checks every cycle.
+
+    Returns a list of RED findings. Empty list = all checks passed.
+    Each finding: {"check": str, "status": "RED", "reason": str}.
+
+    Args:
+        coordinator_data: The coordinator's current sensor data dict.
+        extra: Additional readings (R2900, R2901 readback, etc.)
+
+    Returns:
+        List of RED check results. Empty = healthy.
+    """
+    results: list[dict[str, str]] = []
+    fields = _extract_fields(coordinator_data, extra)
+
+    # 1. R2900 not in (10, 12) and not -1 (unavailable)
+    try:
+        r2900 = fields["r2900"]
+        if r2900 != -1 and r2900 not in (10, 12):
+            results.append({
+                "check": "r2900_ess_mode",
+                "status": "RED",
+                "reason": (
+                    f"R2900 ESS mode is {r2900} (expected 10 or 12). "
+                    f"BatteryLife may be overriding MPC."
+                ),
+            })
+    except Exception as exc:
+        _LOGGER.warning("Deterministic check r2900 failed: %s", exc)
+
+    # 2. R2901 readback >= SoC during non-grid-charge mode
+    try:
+        r2901 = fields["r2901_readback_pct"]
+        soc = fields["soc_pct"]
+        mode = fields["mode"]
+        if (
+            r2901 is not None
+            and r2901 != -1
+            and soc is not None
+            and mode not in ("grid_charge", "unknown")
+            and r2901 >= soc
+        ):
+            results.append({
+                "check": "r2901_above_soc",
+                "status": "RED",
+                "reason": (
+                    f"R2901 readback ({r2901}%) >= SoC ({soc}%) during "
+                    f"{mode} mode. ESS is unintentionally grid-charging."
+                ),
+            })
+    except Exception as exc:
+        _LOGGER.warning("Deterministic check r2901 failed: %s", exc)
+
+    # 3. Grid import > 200W during discharge
+    try:
+        grid_w = fields["grid_import_w"]
+        mode = fields["mode"]
+        if mode == "discharge" and grid_w is not None and grid_w > 200:
+            results.append({
+                "check": "grid_import_during_discharge",
+                "status": "RED",
+                "reason": (
+                    f"Grid importing {grid_w}W during discharge mode. "
+                    f"Battery should be serving load."
+                ),
+            })
+    except Exception as exc:
+        _LOGGER.warning("Deterministic check grid_import failed: %s", exc)
+
+    # 4. Mac runner found
+    try:
+        if fields["mac_runner_found"]:
+            results.append({
+                "check": "mac_runner_active",
+                "status": "RED",
+                "reason": (
+                    "Old Mac runner process detected. Two processes writing "
+                    "registers will cause conflicts."
+                ),
+            })
+    except Exception as exc:
+        _LOGGER.warning("Deterministic check mac_runner failed: %s", exc)
+
+    # 5. YAML automations ON
+    try:
+        yaml_on = fields["yaml_automations_on"]
+        if yaml_on:
+            results.append({
+                "check": "yaml_automations_on",
+                "status": "RED",
+                "reason": (
+                    f"YAML automations are ON: {yaml_on}. "
+                    f"These override HACS register writes."
+                ),
+            })
+    except Exception as exc:
+        _LOGGER.warning("Deterministic check yaml_automations failed: %s", exc)
+
+    # 6. Shadow mode True
+    try:
+        if fields["shadow_mode"]:
+            results.append({
+                "check": "shadow_mode_active",
+                "status": "RED",
+                "reason": (
+                    "Shadow mode is active. Registers are NOT being written. "
+                    "System is running open-loop."
+                ),
+            })
+    except Exception as exc:
+        _LOGGER.warning("Deterministic check shadow_mode failed: %s", exc)
+
+    # 7. SoC < 30% during overnight hours (22:00-06:00)
+    try:
+        soc = fields["soc_pct"]
+        now = datetime.now()
+        is_overnight = now.hour >= 22 or now.hour < 6
+        if is_overnight and soc is not None and soc < 30:
+            results.append({
+                "check": "soc_below_floor_overnight",
+                "status": "RED",
+                "reason": (
+                    f"SoC is {soc}% during overnight hours "
+                    f"({now.strftime('%H:%M')}). Below 30% floor."
+                ),
+            })
+    except Exception as exc:
+        _LOGGER.warning("Deterministic check overnight_soc failed: %s", exc)
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Layer 2: Strategic GenAI (hourly, only when deterministic GREEN)
+# ---------------------------------------------------------------------------
+
+def build_strategic_snapshot(
+    coordinator_data: dict[str, Any],
+    extra: dict[str, Any],
+) -> str:
+    """Build a strategic-only snapshot for the GenAI prompt.
+
+    Includes ONLY strategic information: mode, SoC, prices, trajectory.
+    MUST NOT include registers, power flows, or operational details.
+
+    Args:
+        coordinator_data: The coordinator's current sensor data dict.
+        extra: Additional readings.
+
+    Returns:
+        Formatted string with strategic context only.
+    """
+    fields = _extract_fields(coordinator_data, extra)
+
+    # Solar forecast remaining today
+    solar_forecast = fields.get("solar_forecast", "?")
+
+    # Build trajectory summary from schedule_30min
+    schedule = fields.get("schedule", "")
+    trajectory_str = ""
+    if schedule and schedule != "":
+        trajectory_str = str(schedule)[:400]
+
+    now = datetime.now()
+
+    lines = [
+        f"Time: {now.strftime('%H:%M')} ({now.strftime('%A')})",
+        f"Mode: {fields['mode']}",
+        f"SoC: {fields['soc_pct']}%",
+        f"Buy Price: ${fields['buy_price']}/kWh" if fields["buy_price"] is not None else "Buy Price: ?",
+        f"Amber Band: {fields['amber_band']}" if fields["amber_band"] else "Amber Band: ?",
+        f"Solar Forecast Remaining Today: {solar_forecast} kWh",
+    ]
+
+    if trajectory_str:
+        lines.append(f"Planned trajectory (next 8h): {trajectory_str}")
+
+    return "\n".join(lines)
+
+
+# Keep old build_health_snapshot for backward compatibility
 def build_health_snapshot(
     coordinator_data: dict[str, Any],
     extra: dict[str, Any],
 ) -> str:
     """Build a concise data snapshot for the GenAI prompt.
+
+    DEPRECATED: Use build_strategic_snapshot for new code.
+    Kept for backward compatibility with existing tests.
 
     Args:
         coordinator_data: The coordinator's current sensor data dict.
@@ -129,140 +383,25 @@ def build_health_snapshot(
 
 
 SYSTEM_PROMPT = """\
-You are monitoring a home battery system. Your job is to assess whether the system is \
-achieving its BUSINESS GOALS — not just checking parameters, but reasoning about whether \
-the overall strategy makes sense.
+You are a strategic advisor for a home battery system (Victron Quattro 48/8000, \
+14.2kWh Pylontech, Amber Electric wholesale pricing, 7kW solar shaded until ~11am).
 
-## System: Victron Quattro 48/8000 + Pylontech 14.2kWh, Amber Electric wholesale, \
-7kW solar (shaded by trees until ~11am).
+All operational checks have PASSED — registers, power flows, and safety conditions \
+are verified by deterministic monitors. Your job is ONLY strategic review.
 
-## BUSINESS GOALS (in priority order)
+Given the current mode, SoC, price, and planned trajectory:
+1. Is this the right strategy for the next few hours?
+2. Any risks the optimizer might not be accounting for?
+   - Price spike risk based on current band
+   - Solar forecast vs time of day (will we reach sunset target?)
+   - Load patterns (evening AC risk in summer?)
+   - Overnight reserve adequacy
 
-1. MINIMISE COST: Use the cheapest energy source at every moment. Discharge battery \
-   when grid is expensive, charge when grid is cheap, use solar whenever available. \
-   Every watt from grid during discharge mode is money wasted.
-
-2. NEVER BE CAUGHT EXPOSED: Always have battery reserve for the unexpected — price \
-   spikes come with 5 min notice, load can double when appliances turn on, solar can \
-   disappear behind clouds. Being at floor with no solar is the worst position. \
-   Conservative is better than optimal-on-paper.
-
-3. FULL BY SUNSET: Battery must reach 95%+ before sunset to cover the expensive evening \
-   peak (5-9pm, $0.27-0.30/kWh). Missing sunset target means buying peak power from grid.
-
-4. EXPLOIT PRICE DIFFERENCES: Charge when grid is cheap relative to the day's average, \
-   discharge when expensive. Export during spikes when feed-in tariff exceeds battery wear + \
-   recharge cost. Charge when paid to consume (negative pricing). The LP handles the math — \
-   the GenAI checks whether the strategy direction makes sense.
-
-5. PROTECT THE BATTERY: 30% overnight floor (emergency reserve + genset start buffer). \
-   Cell balancing full charge every 14 days. Don't cycle unnecessarily — wear cost is real.
-
-6. AUTONOMOUS OPERATION: System should run without human intervention. If something goes \
-   wrong (register override, stale data, API failure), it should self-correct or alert. \
-   No silent failures.
-
-## HOW WE ACHIEVE THIS (implementation checks)
-- R2900 (ESS BatteryLife State): MUST be 10 or 12 (BL disabled). \
-  If 2 = BatteryLife active (overriding MPC). If 9 = Keep Charged (grid charging at max rate). \
-  Either is CRITICAL RED.
-- R2901 (ESS Min SoC): R2901 is a floor — ESS discharges while SoC > R2901, charges from grid \
-  when SoC < R2901. Only RED condition: R2901 readback >= current SoC during non-grid-charge \
-  mode (discharge/hold/solar_charge) — means ESS is unintentionally grid-charging. \
-  All other R2901 values are normal operation. IGNORE written-vs-readback differences.
-- R2700 (Grid Setpoint): should be ~50W. If 0, ESS oscillates into small exports. YELLOW.
-- R37 (Power Setpoint): should be ~50W during discharge. If >200W during discharge, ESS is \
-  importing from grid instead of using battery. RED.
-
-## Mode Rules
-- discharge: battery power should be negative (discharging), grid import <100W (50W setpoint + noise)
-- solar_charge: R2901 at hard floor (~30%), battery charging from solar, grid import <100W
-- grid_charge: R2901 ABOVE SoC, grid import expected, battery charging
-- hold: battery near zero, grid serves load
-
-## Power Flow
-- Power balance: solar + grid_import + battery_discharge ≈ load + battery_charge + grid_export + losses (~50-100W)
-- If balance is off by >500W, a sensor may be stale or wrong. YELLOW.
-- Grid export should be 0W during discharge mode (R2706=0 blocks export)
-- If grid export >50W during non-export mode, feed-in register may be wrong. YELLOW.
-
-## Price & Cost Efficiency
-- Use AMBER BANDS as the primary price signal — they are seasonally adjusted and reflect \
-  where the current price sits relative to the market. Bands: extremely_low, very_low, low, \
-  neutral, high, spike.
-- extremely_low / very_low: should be charging (grid_charge_boost kicks in). If NOT charging \
-  during extremely_low, opportunity is being missed. YELLOW.
-- low: hold or gentle discharge is fine. Charging is sensible if evening is forecast expensive.
-- neutral: discharge from battery is normal — saving vs buying later.
-- high: discharge expected — battery is saving significant money.
-- spike (>$1/kWh): aggressive discharge + export if FIT profitable. If NOT discharging, RED.
-- negative (<$0): must be grid-charging (paid to consume). If not charging, RED.
-- In winter, ALL bands shift up. Charging at "low" ($0.25) to survive "high" ($0.50) evening \
-  is correct — don't flag this. The bands handle the seasonal adjustment.
-- The LP optimizes across 24h — it sees future prices. The GenAI checks whether the strategy \
-  direction aligns with the band, not the absolute dollar amount.
-
-## Solar Insurance (Shading Gap)
-- Solar is shaded by trees until ~11am. During 09:00-11:30 with low solar (<300W):
-  - SoC should NOT be at floor (30%). Insurance should hold it at ~40-50%.
-  - If SoC is at 30% floor during shading gap with no solar, insurance may not be working. YELLOW.
-- After 11am with clear sky: solar should be >2kW and battery should be charging
-- Solar forecast vs yield: by 2pm, yield should be >40% of forecast. If <30%, forecast may be wrong. YELLOW.
-
-## System Health
-- Battery max charge/discharge: 7.1kW. If battery power >7100W, sensor error. YELLOW.
-- Inverter: 8kVA continuous. Load >8000W is concerning.
-- SoC should track planned trajectory within ~10%. Larger deviation means forecast was wrong or \
-  something overrode the plan. YELLOW if >15% off.
-
-## Sunset Constraint
-- SoC must reach 95% by sunset. If SoC <90% within 2 hours of sunset and not charging, YELLOW.
-- After sunset, battery should be near 100% for evening peak discharge ($0.27-0.30).
-- Evening peak is 5-9pm. LP should hold battery at 100% until ~8pm, then discharge.
-
-## Overnight Preservation
-- 30% hard floor overnight (22:00-06:00). SoC should not drop below 30% overnight.
-- Overnight hold reward keeps battery from draining during cheap overnight ($0.15-0.20).
-- If SoC drops below 35% overnight, overnight hold may be misconfigured. YELLOW.
-
-## Cell Balancing
-- Force full charge (100%) every 14 days for Pylontech LFP cell balancing.
-- If SoC hasn't reached 100% in the last 14 days, balancing is overdue. YELLOW.
-
-## Spike Handling
-- Amber spike (>$1/kWh): LP should discharge aggressively, R2901 at hard floor (10%).
-- During spike with FIT >$0.10 and SoC >30%: R2706=70 (export for profit).
-- Post-spike: LP should plan recharge at cheapest available price.
-- Negative pricing (<$0): should grid-charge (paid to consume). R2901 should be high, R2706=70.
-
-## Amber Band Logic
-- extremely_low/very_low bands: grid_charge_boost added to SoC reward — encourages charging. \
-  The boost is a tunable that adapts with the SoC profile.
-- low band: half boost applied.
-- These boosts work WITH the LP's 24h optimization, not against it.
-
-## SoC Profile Economics
-- Pre-peak reward ($0.20) must exceed grid cost ($0.15 + $0.02 penalty = $0.17) for LP to grid-charge.
-- If reward < grid cost, LP will never charge from grid during that period.
-- Morning reward ($0.10) values battery during 6-9am peak.
-- Overnight reward ($0.03) is intentionally low — discharge at moderate prices is fine.
-
-## AC / Load Spikes
-- AC units draw 2-3kW each. Hot afternoon/evening can add 4-6kW sustained.
-- Load forecast may underestimate on hot days. If actual load >150% of forecast, flag. YELLOW.
-- Hair dryer, oven, dishwasher: transient 1-3kW spikes are normal, not a concern.
-
-## Known Threats
-- Old Mac runner process: if snapshot mentions mac_runner_found=true, this is CRITICAL RED. \
-  The old process writes conflicting register values and was killed 2026-03-30.
-- BatteryLife revival: R2900 reverting from 10/12 to 2 after Cerbo reboot. CRITICAL RED.
-- Duplicate register writers: if R2901 readback oscillates between two values every 5 min, \
-  two processes are fighting. RED.
-- YAML automations: all 12 automation.mpc_* must be OFF. They re-enable on HA restart. \
-  If any are ON, they will override HACS register writes. RED.
+Keep it brief — one sentence if GREEN, 2-3 sentences if concern.
+Never return RED — deterministic checks handle critical issues.
 
 Respond in JSON only:
-{"status": "GREEN|YELLOW|RED", "summary": "one line", "details": "explanation if YELLOW or RED, empty if GREEN"}\
+{"status": "GREEN|YELLOW", "summary": "one line", "details": "explanation if YELLOW"}\
 """
 
 
@@ -334,11 +473,25 @@ async def run_genai_health_check(
                     clean = match.group(0)
 
             result = json.loads(clean)
-            return {
+
+            parsed = {
                 "status": result.get("status", "UNKNOWN"),
                 "summary": result.get("summary", ""),
                 "details": result.get("details", ""),
             }
+
+            # GenAI layer cannot produce RED — downgrade to YELLOW
+            if parsed["status"] == "RED":
+                _LOGGER.info(
+                    "GenAI returned RED — downgrading to YELLOW "
+                    "(deterministic checks handle RED conditions)"
+                )
+                parsed["status"] = "YELLOW"
+                parsed["details"] = (
+                    f"[Downgraded from RED] {parsed['details']}"
+                )
+
+            return parsed
 
     except json.JSONDecodeError:
         # Response may be truncated by max_tokens — try to extract status and summary
@@ -350,8 +503,12 @@ async def run_genai_health_check(
                 "GenAI: recovered truncated response: %s",
                 status_m.group(1),
             )
+            status = status_m.group(1)
+            # Downgrade RED from truncated response too
+            if status == "RED":
+                status = "YELLOW"
             return {
-                "status": status_m.group(1),
+                "status": status,
                 "summary": summary_m.group(1) if summary_m else "(truncated)",
                 "details": "(response truncated by token limit)",
             }

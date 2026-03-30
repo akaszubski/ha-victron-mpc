@@ -41,7 +41,12 @@ from .const import (
     UPDATE_INTERVAL_MINUTES,
 )
 from .forecasts import ForecastBuilder
-from .genai_monitor import GENAI_CYCLE_INTERVAL, build_health_snapshot, run_genai_health_check
+from .genai_monitor import (
+    GENAI_CYCLE_INTERVAL,
+    build_strategic_snapshot,
+    run_deterministic_checks,
+    run_genai_health_check,
+)
 from .optimizer import OptInput, OptOutput, compute_sunset_target, optimize
 from .utils import scale_overnight_hold_reward
 
@@ -511,87 +516,23 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._log_amber_forecast(forecasts)
 
             # ----------------------------------------------------------
-            # Phase 7e: GenAI health monitor (hourly)
+            # Phase 7e+7f: Health monitoring (deterministic + GenAI)
             # ----------------------------------------------------------
-            self._genai_cycle_count += 1
-            # Fire on first cycle (immediate after startup) then every 12th
-            is_first_cycle = (self._genai_cycle_count == 1)
-            is_hourly_cycle = (self._genai_cycle_count >= GENAI_CYCLE_INTERVAL)
-            if is_first_cycle or is_hourly_cycle:
-                if is_hourly_cycle:
-                    self._genai_cycle_count = 0
-                api_key = self.entry.data.get(
-                    "openrouter_api_key", ""
-                ) or self.entry.options.get("openrouter_api_key", "")
-                LOGGER.info(
-                    "GenAI cycle: api_key=%s, data_keys=%s, options_keys=%s",
-                    "set" if api_key else "EMPTY",
-                    list(self.entry.data.keys()),
-                    list(self.entry.options.keys()),
-                )
-                if api_key:
-                    extra = {
-                        "r2901_readback_pct": self._get_r2901_readback(),
-                        "r2900": self._get_r2900(),
-                        "r37_setpoint_w": self._get_r37_setpoint(),
-                        "grid_import_w": grid_import_w,
-                        "grid_export_w": self._get_grid_export(),
-                        "battery_power_w": self._get_battery_power(),
-                        "weather": forecasts.get("weather_condition", "unknown"),
-                        "solar_yield_kwh": self._get_solar_yield(),
-                    }
-                    snapshot = build_health_snapshot(
-                        coordinator_data=self._build_sensor_data(
-                            result=result,
-                            forecasts=forecasts,
-                            tunables=tunables,
-                            target_register=target_register,
-                            feedin_value=feedin_value,
-                            mode=mode,
-                            override_reason=override_reason,
-                            is_spike=is_spike,
-                            shadow_mode=shadow_mode,
-                            buy_price_now=buy_price_now,
-                            sell_price_now=sell_price_now,
-                            forecast_builder=forecast_builder,
-                        ),
-                        extra=extra,
-                    )
-                    session = async_get_clientsession(self.hass)
-                    genai_result = await run_genai_health_check(
-                        session, api_key, snapshot,
-                    )
-                    self._last_genai_result = genai_result
-                    status = genai_result.get("status", "?")
-                    LOGGER.info(
-                        "GenAI health: %s -- %s",
-                        status,
-                        genai_result.get("summary", ""),
-                    )
-                    if status == "RED":
-                        self._genai_consecutive_red += 1
-                        if self._genai_consecutive_red >= 2:
-                            await self._notify(
-                                "MPC GenAI Alert: Persistent Issue Detected",
-                                f"RED for {self._genai_consecutive_red} consecutive checks.\n\n"
-                                f"{genai_result.get('summary', 'Unknown issue')}\n\n"
-                                f"{genai_result.get('details', '')}",
-                                notification_id="mpc_genai_alert",
-                            )
-                        else:
-                            LOGGER.info("GenAI RED (1st occurrence) — will alert if persistent")
-                    else:
-                        if self._genai_consecutive_red > 0:
-                            LOGGER.info(
-                                "GenAI cleared after %d consecutive RED",
-                                self._genai_consecutive_red,
-                            )
-                        self._genai_consecutive_red = 0
+            # Build extra dict OUTSIDE the cycle check so deterministic
+            # checks can use it every cycle.
+            extra = {
+                "r2901_readback_pct": self._get_r2901_readback(),
+                "r2900": self._get_r2900(),
+                "r37_setpoint_w": self._get_r37_setpoint(),
+                "grid_import_w": grid_import_w,
+                "grid_export_w": self._get_grid_export(),
+                "battery_power_w": self._get_battery_power(),
+                "weather": forecasts.get("weather_condition", "unknown"),
+                "solar_yield_kwh": self._get_solar_yield(),
+            }
 
-            # ----------------------------------------------------------
-            # Phase 8: Build data dict for sensor entities
-            # ----------------------------------------------------------
-            return self._build_sensor_data(
+            # Cache sensor data for both deterministic checks and Phase 8 return
+            sensor_data = self._build_sensor_data(
                 result=result,
                 forecasts=forecasts,
                 tunables=tunables,
@@ -605,6 +546,83 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 sell_price_now=sell_price_now,
                 forecast_builder=forecast_builder,
             )
+
+            # Phase 7e: Deterministic health checks (every cycle)
+            deterministic_results = run_deterministic_checks(
+                coordinator_data=sensor_data,
+                extra=extra,
+            )
+
+            if deterministic_results:
+                # RED from deterministic checks
+                first_red = deterministic_results[0]
+                self._last_genai_result = {
+                    "status": "RED",
+                    "summary": first_red["reason"],
+                    "details": "; ".join(r["reason"] for r in deterministic_results),
+                    "source": "deterministic",
+                }
+                self._genai_consecutive_red += 1
+                LOGGER.warning("Deterministic RED: %s", first_red["reason"])
+                if self._genai_consecutive_red >= 2:
+                    await self._notify(
+                        "MPC Alert: System Issue Detected",
+                        f"RED for {self._genai_consecutive_red} consecutive checks.\n\n"
+                        + "\n".join(f"- {r['reason']}" for r in deterministic_results),
+                        notification_id="mpc_deterministic_alert",
+                    )
+            else:
+                # All deterministic checks passed
+                self._last_genai_result = {
+                    "status": "GREEN",
+                    "summary": "All operational checks passed",
+                    "details": "",
+                    "source": "deterministic",
+                }
+                if self._genai_consecutive_red > 0:
+                    LOGGER.info(
+                        "Deterministic cleared after %d consecutive RED",
+                        self._genai_consecutive_red,
+                    )
+                self._genai_consecutive_red = 0
+
+            # Phase 7f: GenAI strategic review (hourly, only when healthy)
+            self._genai_cycle_count += 1
+            is_first_cycle = (self._genai_cycle_count == 1)
+            is_hourly_cycle = (self._genai_cycle_count >= GENAI_CYCLE_INTERVAL)
+            if (is_first_cycle or is_hourly_cycle) and not deterministic_results:
+                if is_hourly_cycle:
+                    self._genai_cycle_count = 0
+                api_key = self.entry.data.get(
+                    "openrouter_api_key", ""
+                ) or self.entry.options.get("openrouter_api_key", "")
+                if api_key:
+                    snapshot = build_strategic_snapshot(
+                        coordinator_data=sensor_data,
+                        extra=extra,
+                    )
+                    session = async_get_clientsession(self.hass)
+                    genai_result = await run_genai_health_check(
+                        session, api_key, snapshot,
+                    )
+                    # Merge GenAI result with deterministic GREEN
+                    if genai_result.get("status") in ("YELLOW", "GREEN"):
+                        self._last_genai_result = {
+                            "status": genai_result["status"],
+                            "summary": genai_result.get("summary", ""),
+                            "details": genai_result.get("details", ""),
+                            "source": "genai",
+                        }
+                    LOGGER.info(
+                        "GenAI strategic: %s -- %s",
+                        genai_result.get("status"),
+                        genai_result.get("summary"),
+                    )
+
+            # ----------------------------------------------------------
+            # Phase 8: Return cached sensor data
+            # ----------------------------------------------------------
+            return sensor_data
 
         except Exception as err:
             self._consecutive_failures += 1

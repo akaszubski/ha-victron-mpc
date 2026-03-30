@@ -1,8 +1,9 @@
-"""Tests for GenAI health monitor."""
+"""Tests for GenAI health monitor — deterministic checks, strategic snapshot, and API calls."""
 
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -10,12 +11,415 @@ import pytest
 from custom_components.victron_mpc.genai_monitor import (
     GENAI_CYCLE_INTERVAL,
     build_health_snapshot,
+    build_strategic_snapshot,
+    run_deterministic_checks,
     run_genai_health_check,
 )
 
 
+# ======================================================================
+# TestRunDeterministicChecks — Layer 1 pure Python checks
+# ======================================================================
+
+
+class TestRunDeterministicChecks:
+    """Tests for run_deterministic_checks — all 7 checks plus edge cases."""
+
+    # --- Check 1: R2900 ESS mode ---
+
+    def test_r2900_normal_10(self):
+        """R2900=10 (BL disabled, optimized) passes."""
+        results = run_deterministic_checks({}, {"r2900": 10})
+        assert not any(r["check"] == "r2900_ess_mode" for r in results)
+
+    def test_r2900_normal_12(self):
+        """R2900=12 (BL disabled, keep SoC) passes."""
+        results = run_deterministic_checks({}, {"r2900": 12})
+        assert not any(r["check"] == "r2900_ess_mode" for r in results)
+
+    def test_r2900_batterylife_active(self):
+        """R2900=2 (BatteryLife active) is RED."""
+        results = run_deterministic_checks({}, {"r2900": 2})
+        reds = [r for r in results if r["check"] == "r2900_ess_mode"]
+        assert len(reds) == 1
+        assert reds[0]["status"] == "RED"
+        assert "2" in reds[0]["reason"]
+
+    def test_r2900_keep_charged(self):
+        """R2900=9 (Keep Charged) is RED."""
+        results = run_deterministic_checks({}, {"r2900": 9})
+        reds = [r for r in results if r["check"] == "r2900_ess_mode"]
+        assert len(reds) == 1
+        assert reds[0]["status"] == "RED"
+
+    def test_r2900_unavailable_skipped(self):
+        """R2900=-1 (unavailable) is NOT flagged."""
+        results = run_deterministic_checks({}, {"r2900": -1})
+        assert not any(r["check"] == "r2900_ess_mode" for r in results)
+
+    def test_r2900_missing_from_extra(self):
+        """Missing r2900 defaults to -1, not flagged."""
+        results = run_deterministic_checks({}, {})
+        assert not any(r["check"] == "r2900_ess_mode" for r in results)
+
+    # --- Check 2: R2901 readback >= SoC during non-grid-charge ---
+
+    def test_r2901_above_soc_during_discharge(self):
+        """R2901 above SoC in discharge mode is RED."""
+        data = {"mode": "discharge", "battery_soc_pct": 50}
+        extra = {"r2901_readback_pct": 55}
+        results = run_deterministic_checks(data, extra)
+        reds = [r for r in results if r["check"] == "r2901_above_soc"]
+        assert len(reds) == 1
+        assert "55" in reds[0]["reason"]
+        assert "50" in reds[0]["reason"]
+
+    def test_r2901_equal_to_soc_during_solar_charge(self):
+        """R2901 == SoC in solar_charge mode is RED (>= check)."""
+        data = {"mode": "solar_charge", "battery_soc_pct": 30}
+        extra = {"r2901_readback_pct": 30}
+        results = run_deterministic_checks(data, extra)
+        assert any(r["check"] == "r2901_above_soc" for r in results)
+
+    def test_r2901_above_soc_during_grid_charge_ok(self):
+        """R2901 above SoC during grid_charge is expected, not RED."""
+        data = {"mode": "grid_charge", "battery_soc_pct": 50}
+        extra = {"r2901_readback_pct": 80}
+        results = run_deterministic_checks(data, extra)
+        assert not any(r["check"] == "r2901_above_soc" for r in results)
+
+    def test_r2901_below_soc_passes(self):
+        """R2901 below SoC passes."""
+        data = {"mode": "discharge", "battery_soc_pct": 70}
+        extra = {"r2901_readback_pct": 30}
+        results = run_deterministic_checks(data, extra)
+        assert not any(r["check"] == "r2901_above_soc" for r in results)
+
+    def test_r2901_unavailable_skipped(self):
+        """R2901=-1 (unavailable) is not flagged."""
+        data = {"mode": "discharge", "battery_soc_pct": 50}
+        extra = {"r2901_readback_pct": -1}
+        results = run_deterministic_checks(data, extra)
+        assert not any(r["check"] == "r2901_above_soc" for r in results)
+
+    def test_r2901_unknown_mode_skipped(self):
+        """Unknown mode skips the r2901 check."""
+        data = {"mode": "unknown", "battery_soc_pct": 50}
+        extra = {"r2901_readback_pct": 80}
+        results = run_deterministic_checks(data, extra)
+        assert not any(r["check"] == "r2901_above_soc" for r in results)
+
+    # --- Check 3: Grid import during discharge ---
+
+    def test_grid_import_during_discharge(self):
+        """Grid import > 200W during discharge is RED."""
+        data = {"mode": "discharge"}
+        extra = {"grid_import_w": 500}
+        results = run_deterministic_checks(data, extra)
+        reds = [r for r in results if r["check"] == "grid_import_during_discharge"]
+        assert len(reds) == 1
+        assert "500" in reds[0]["reason"]
+
+    def test_grid_import_200w_during_discharge_ok(self):
+        """Grid import exactly 200W during discharge passes (not > 200)."""
+        data = {"mode": "discharge"}
+        extra = {"grid_import_w": 200}
+        results = run_deterministic_checks(data, extra)
+        assert not any(r["check"] == "grid_import_during_discharge" for r in results)
+
+    def test_grid_import_during_hold_ok(self):
+        """Grid import during hold mode is not flagged."""
+        data = {"mode": "hold"}
+        extra = {"grid_import_w": 500}
+        results = run_deterministic_checks(data, extra)
+        assert not any(r["check"] == "grid_import_during_discharge" for r in results)
+
+    # --- Check 4: Mac runner ---
+
+    def test_mac_runner_found(self):
+        """Mac runner active is RED."""
+        results = run_deterministic_checks({}, {"mac_runner_found": True})
+        reds = [r for r in results if r["check"] == "mac_runner_active"]
+        assert len(reds) == 1
+        assert reds[0]["status"] == "RED"
+
+    def test_mac_runner_not_found(self):
+        """Mac runner not found passes."""
+        results = run_deterministic_checks({}, {"mac_runner_found": False})
+        assert not any(r["check"] == "mac_runner_active" for r in results)
+
+    def test_mac_runner_missing_defaults_false(self):
+        """Missing mac_runner_found defaults to False."""
+        results = run_deterministic_checks({}, {})
+        assert not any(r["check"] == "mac_runner_active" for r in results)
+
+    # --- Check 5: YAML automations ---
+
+    def test_yaml_automations_on(self):
+        """YAML automations ON is RED."""
+        extra = {"yaml_automations_on": ["automation.mpc_register_writer"]}
+        results = run_deterministic_checks({}, extra)
+        reds = [r for r in results if r["check"] == "yaml_automations_on"]
+        assert len(reds) == 1
+        assert "mpc_register_writer" in reds[0]["reason"]
+
+    def test_yaml_automations_empty_list(self):
+        """Empty YAML automations list passes."""
+        results = run_deterministic_checks({}, {"yaml_automations_on": []})
+        assert not any(r["check"] == "yaml_automations_on" for r in results)
+
+    def test_yaml_automations_missing(self):
+        """Missing yaml_automations_on defaults to empty list."""
+        results = run_deterministic_checks({}, {})
+        assert not any(r["check"] == "yaml_automations_on" for r in results)
+
+    # --- Check 6: Shadow mode ---
+
+    def test_shadow_mode_active(self):
+        """Shadow mode active is RED."""
+        data = {"shadow_mode": True}
+        results = run_deterministic_checks(data, {})
+        reds = [r for r in results if r["check"] == "shadow_mode_active"]
+        assert len(reds) == 1
+        assert reds[0]["status"] == "RED"
+
+    def test_shadow_mode_inactive(self):
+        """Shadow mode False passes."""
+        data = {"shadow_mode": False}
+        results = run_deterministic_checks(data, {})
+        assert not any(r["check"] == "shadow_mode_active" for r in results)
+
+    # --- Check 7: Overnight SoC ---
+
+    @patch("custom_components.victron_mpc.genai_monitor.datetime")
+    def test_soc_below_30_overnight(self, mock_dt):
+        """SoC below 30% during overnight hours is RED."""
+        mock_dt.now.return_value = datetime(2026, 3, 30, 23, 30)
+        data = {"battery_soc_pct": 25}
+        results = run_deterministic_checks(data, {})
+        reds = [r for r in results if r["check"] == "soc_below_floor_overnight"]
+        assert len(reds) == 1
+        assert "25" in reds[0]["reason"]
+
+    @patch("custom_components.victron_mpc.genai_monitor.datetime")
+    def test_soc_below_30_early_morning(self, mock_dt):
+        """SoC below 30% at 4am is RED (still overnight)."""
+        mock_dt.now.return_value = datetime(2026, 3, 30, 4, 0)
+        data = {"battery_soc_pct": 28}
+        results = run_deterministic_checks(data, {})
+        assert any(r["check"] == "soc_below_floor_overnight" for r in results)
+
+    @patch("custom_components.victron_mpc.genai_monitor.datetime")
+    def test_soc_below_30_daytime_ok(self, mock_dt):
+        """SoC below 30% during daytime is not flagged."""
+        mock_dt.now.return_value = datetime(2026, 3, 30, 14, 0)
+        data = {"battery_soc_pct": 25}
+        results = run_deterministic_checks(data, {})
+        assert not any(r["check"] == "soc_below_floor_overnight" for r in results)
+
+    @patch("custom_components.victron_mpc.genai_monitor.datetime")
+    def test_soc_above_30_overnight_ok(self, mock_dt):
+        """SoC above 30% during overnight is fine."""
+        mock_dt.now.return_value = datetime(2026, 3, 30, 23, 30)
+        data = {"battery_soc_pct": 45}
+        results = run_deterministic_checks(data, {})
+        assert not any(r["check"] == "soc_below_floor_overnight" for r in results)
+
+    @patch("custom_components.victron_mpc.genai_monitor.datetime")
+    def test_soc_exactly_30_overnight_ok(self, mock_dt):
+        """SoC exactly 30% overnight passes (< 30 check, not <=)."""
+        mock_dt.now.return_value = datetime(2026, 3, 30, 23, 30)
+        data = {"battery_soc_pct": 30}
+        results = run_deterministic_checks(data, {})
+        assert not any(r["check"] == "soc_below_floor_overnight" for r in results)
+
+    # --- Nested format ---
+
+    def test_nested_coordinator_data(self):
+        """Handles nested format from _build_sensor_data."""
+        data = {
+            "decision": {
+                "state": "discharge",
+                "battery_soc_pct": 50,
+                "shadow_mode": False,
+                "grid_import_w": 10,
+            },
+        }
+        extra = {"r2900": 10, "r2901_readback_pct": 30}
+        results = run_deterministic_checks(data, extra)
+        # Should not flag r2901 (30 < 50)
+        assert not any(r["check"] == "r2901_above_soc" for r in results)
+
+    def test_nested_format_r2901_above_soc(self):
+        """Nested format correctly detects R2901 above SoC."""
+        data = {
+            "decision": {
+                "state": "discharge",
+                "battery_soc_pct": 40,
+                "shadow_mode": False,
+                "grid_import_w": 10,
+            },
+        }
+        extra = {"r2900": 10, "r2901_readback_pct": 45}
+        results = run_deterministic_checks(data, extra)
+        assert any(r["check"] == "r2901_above_soc" for r in results)
+
+    # --- All pass ---
+
+    def test_all_pass_returns_empty(self):
+        """Healthy system returns empty list."""
+        data = {
+            "mode": "discharge",
+            "battery_soc_pct": 70,
+            "shadow_mode": False,
+        }
+        extra = {
+            "r2900": 10,
+            "r2901_readback_pct": 30,
+            "grid_import_w": 50,
+            "mac_runner_found": False,
+            "yaml_automations_on": [],
+        }
+        results = run_deterministic_checks(data, extra)
+        assert results == []
+
+    # --- Multiple failures ---
+
+    def test_multiple_reds(self):
+        """Multiple failures are all returned."""
+        data = {"mode": "discharge", "battery_soc_pct": 50, "shadow_mode": True}
+        extra = {
+            "r2900": 2,
+            "r2901_readback_pct": 60,
+            "grid_import_w": 500,
+            "mac_runner_found": True,
+            "yaml_automations_on": ["automation.mpc_register_writer"],
+        }
+        results = run_deterministic_checks(data, extra)
+        checks_found = {r["check"] for r in results}
+        assert "r2900_ess_mode" in checks_found
+        assert "r2901_above_soc" in checks_found
+        assert "grid_import_during_discharge" in checks_found
+        assert "mac_runner_active" in checks_found
+        assert "yaml_automations_on" in checks_found
+        assert "shadow_mode_active" in checks_found
+
+    # --- Robustness ---
+
+    def test_empty_inputs(self):
+        """Empty dicts don't crash."""
+        results = run_deterministic_checks({}, {})
+        # Only r2900 could trigger if default were bad, but -1 skips
+        # No crashes expected
+        assert isinstance(results, list)
+
+    def test_none_soc_skips_checks(self):
+        """None SoC doesn't crash r2901 check."""
+        data = {"mode": "discharge", "battery_soc_pct": None}
+        extra = {"r2901_readback_pct": 50}
+        results = run_deterministic_checks(data, extra)
+        # soc is None, so r2901 check should be skipped
+        assert not any(r["check"] == "r2901_above_soc" for r in results)
+
+
+# ======================================================================
+# TestBuildStrategicSnapshot — Layer 2 snapshot builder
+# ======================================================================
+
+
+class TestBuildStrategicSnapshot:
+    """Tests for build_strategic_snapshot — inclusion/exclusion of fields."""
+
+    def test_includes_strategic_fields(self):
+        """Snapshot includes mode, SoC, price, band."""
+        data = {
+            "mode": "discharge",
+            "battery_soc_pct": 72,
+            "buy_price": 0.25,
+            "solar_forecast_today": 18.5,
+        }
+        extra = {"amber_band": "neutral"}
+        snapshot = build_strategic_snapshot(data, extra)
+
+        assert "Mode: discharge" in snapshot
+        assert "SoC: 72%" in snapshot
+        assert "$0.25" in snapshot
+        assert "Amber Band: neutral" in snapshot
+        assert "18.5" in snapshot
+
+    def test_excludes_operational_fields(self):
+        """Snapshot must NOT include registers, power flows."""
+        data = {
+            "mode": "discharge",
+            "battery_soc_pct": 72,
+            "buy_price": 0.25,
+        }
+        extra = {
+            "r2901_readback_pct": 30,
+            "r2900": 10,
+            "r37_setpoint_w": 50,
+            "grid_import_w": 100,
+            "grid_export_w": 0,
+            "battery_power_w": -1500,
+            "mac_runner_found": False,
+            "yaml_automations_on": [],
+        }
+        snapshot = build_strategic_snapshot(data, extra)
+
+        assert "R2901" not in snapshot
+        assert "R2900" not in snapshot
+        assert "R37" not in snapshot
+        assert "grid_import" not in snapshot.lower() or "Grid Import" not in snapshot
+        assert "battery_power" not in snapshot.lower()
+        assert "mac_runner" not in snapshot.lower()
+        assert "yaml_automations" not in snapshot.lower()
+        assert "feedin" not in snapshot.lower()
+
+    def test_includes_trajectory(self):
+        """Trajectory is included when schedule_30min present."""
+        data = {
+            "mode": "discharge",
+            "battery_soc_pct": 70,
+            "schedule_30min": "[70, 68, 65, 62]",
+        }
+        snapshot = build_strategic_snapshot(data, {})
+        assert "trajectory" in snapshot.lower()
+
+    def test_no_trajectory_when_absent(self):
+        """No trajectory line when schedule is empty."""
+        data = {"mode": "discharge", "battery_soc_pct": 70}
+        snapshot = build_strategic_snapshot(data, {})
+        assert "trajectory" not in snapshot.lower()
+
+    def test_handles_nested_format(self):
+        """Works with nested coordinator_data format."""
+        data = {
+            "decision": {
+                "state": "solar_charge",
+                "battery_soc_pct": 60,
+                "shadow_mode": False,
+                "grid_import_w": 0,
+                "schedule_30min": "[60, 65, 70]",
+            },
+            "buy_price": {"state": 0.15},
+            "solar_forecast_today": {"state": 20.0},
+        }
+        extra = {"amber_band": "low"}
+        snapshot = build_strategic_snapshot(data, extra)
+
+        assert "Mode: solar_charge" in snapshot
+        assert "SoC: 60%" in snapshot
+        assert "$0.15" in snapshot
+        assert "Amber Band: low" in snapshot
+
+
+# ======================================================================
+# TestBuildHealthSnapshot — backward compatibility (old snapshot)
+# ======================================================================
+
+
 class TestBuildHealthSnapshot:
-    """Tests for build_health_snapshot."""
+    """Tests for build_health_snapshot (backward compatibility)."""
 
     def test_basic_snapshot_contains_all_fields(self):
         """Snapshot includes mode, SoC, prices, and other key fields."""
@@ -172,6 +576,11 @@ class TestBuildHealthSnapshot:
         assert "Solar forecast_2h_w: 500W" in snapshot
 
 
+# ======================================================================
+# TestRunGenaiHealthCheck — Layer 2 API calls
+# ======================================================================
+
+
 class TestRunGenaiHealthCheck:
     """Tests for run_genai_health_check."""
 
@@ -218,8 +627,8 @@ class TestRunGenaiHealthCheck:
         assert result["details"] == ""
 
     @pytest.mark.asyncio
-    async def test_successful_red_response(self):
-        """Parses a RED JSON response with details."""
+    async def test_red_response_downgraded_to_yellow(self):
+        """RED responses from GenAI are downgraded to YELLOW."""
         api_response = {
             "choices": [
                 {
@@ -247,8 +656,10 @@ class TestRunGenaiHealthCheck:
 
         result = await run_genai_health_check(session, "sk-or-test-key", "snapshot data")
 
-        assert result["status"] == "RED"
+        # RED downgraded to YELLOW
+        assert result["status"] == "YELLOW"
         assert "Grid charging" in result["summary"]
+        assert "Downgraded from RED" in result["details"]
 
     @pytest.mark.asyncio
     async def test_handles_markdown_code_block_response(self):
@@ -294,7 +705,7 @@ class TestRunGenaiHealthCheck:
     @pytest.mark.asyncio
     async def test_handles_bare_code_block_no_language_tag(self):
         """Strips bare ``` fences (no language tag)."""
-        wrapped = '```\n{"status": "RED", "summary": "Bad", "details": "very bad"}\n```'
+        wrapped = '```\n{"status": "YELLOW", "summary": "Bad", "details": "very bad"}\n```'
         api_response = {"choices": [{"message": {"content": wrapped}}]}
 
         mock_resp = AsyncMock()
@@ -308,7 +719,7 @@ class TestRunGenaiHealthCheck:
 
         result = await run_genai_health_check(session, "sk-or-test-key", "snapshot")
 
-        assert result["status"] == "RED"
+        assert result["status"] == "YELLOW"
         assert result["summary"] == "Bad"
 
     @pytest.mark.asyncio
@@ -460,6 +871,59 @@ class TestRunGenaiHealthCheck:
         assert messages[1]["role"] == "user"
         # System prompt should NOT be a top-level key (Anthropic format)
         assert "system" not in payload
+
+    @pytest.mark.asyncio
+    async def test_system_prompt_is_strategic(self):
+        """System prompt mentions strategic advisor, not register checks."""
+        api_response = {
+            "choices": [
+                {"message": {"content": json.dumps({"status": "GREEN", "summary": "OK", "details": ""})}}
+            ]
+        }
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value=api_response)
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        session = MagicMock()
+        session.post = MagicMock(return_value=mock_resp)
+
+        await run_genai_health_check(session, "sk-or-key", "snapshot")
+
+        call_kwargs = session.post.call_args
+        payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        system_content = payload["messages"][0]["content"]
+        assert "strategic" in system_content.lower()
+        assert "Never return RED" in system_content
+
+    @pytest.mark.asyncio
+    async def test_truncated_red_response_downgraded(self):
+        """Truncated RED response recovered via regex is also downgraded."""
+        # Simulate a truncated JSON where only status and summary are parseable
+        truncated = '{"status": "RED", "summary": "Critical issue", "details": "long text that gets'
+        api_response = {"choices": [{"message": {"content": truncated}}]}
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value=api_response)
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        session = MagicMock()
+        session.post = MagicMock(return_value=mock_resp)
+
+        result = await run_genai_health_check(session, "sk-or-key", "snapshot")
+
+        # Truncated RED should be downgraded to YELLOW
+        assert result["status"] == "YELLOW"
+        assert result["summary"] == "Critical issue"
+
+
+# ======================================================================
+# TestCycleInterval
+# ======================================================================
 
 
 class TestCycleInterval:
