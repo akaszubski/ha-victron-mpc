@@ -180,6 +180,47 @@ class TestRunGenaiHealthCheck:
         assert result["summary"] == "Minor issue"
 
     @pytest.mark.asyncio
+    async def test_handles_markdown_code_block_with_extra_text(self):
+        """Strips markdown code fences even when extra text surrounds the JSON."""
+        # Regression: some models return prose before/after the code block
+        wrapped = 'Here is the analysis:\n```json\n{"status": "GREEN", "summary": "OK", "details": "fine"}\n```\nEnd.'
+        api_response = {"choices": [{"message": {"content": wrapped}}]}
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value=api_response)
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        session = MagicMock()
+        session.post = MagicMock(return_value=mock_resp)
+
+        result = await run_genai_health_check(session, "sk-or-test-key", "snapshot")
+
+        assert result["status"] == "GREEN"
+        assert result["summary"] == "OK"
+
+    @pytest.mark.asyncio
+    async def test_handles_bare_code_block_no_language_tag(self):
+        """Strips bare ``` fences (no language tag)."""
+        wrapped = '```\n{"status": "RED", "summary": "Bad", "details": "very bad"}\n```'
+        api_response = {"choices": [{"message": {"content": wrapped}}]}
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value=api_response)
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        session = MagicMock()
+        session.post = MagicMock(return_value=mock_resp)
+
+        result = await run_genai_health_check(session, "sk-or-test-key", "snapshot")
+
+        assert result["status"] == "RED"
+        assert result["summary"] == "Bad"
+
+    @pytest.mark.asyncio
     async def test_handles_api_error_status(self):
         """Returns ERROR on non-200 HTTP status."""
         mock_resp = AsyncMock()

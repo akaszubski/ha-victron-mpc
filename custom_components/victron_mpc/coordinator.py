@@ -518,6 +518,12 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 api_key = self.entry.data.get(
                     "openrouter_api_key", ""
                 ) or self.entry.options.get("openrouter_api_key", "")
+                LOGGER.info(
+                    "GenAI cycle: api_key=%s, data_keys=%s, options_keys=%s",
+                    "set" if api_key else "EMPTY",
+                    list(self.entry.data.keys()),
+                    list(self.entry.options.keys()),
+                )
                 if api_key:
                     extra = {
                         "r2901_readback_pct": self._get_r2901_readback(),

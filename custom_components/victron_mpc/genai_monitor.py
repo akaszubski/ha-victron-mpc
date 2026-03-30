@@ -254,13 +254,20 @@ async def run_genai_health_check(
             data = await resp.json()
             text = data["choices"][0]["message"]["content"]
 
-            # Parse JSON response
-            # Handle cases where Claude wraps in markdown code blocks
+            # Parse JSON response — strip markdown code blocks if present
             clean = text.strip()
             if clean.startswith("```"):
+                # Remove opening ``` or ```json line
                 clean = clean.split("\n", 1)[1] if "\n" in clean else clean[3:]
-                clean = clean.rsplit("```", 1)[0]
+            if clean.endswith("```"):
+                clean = clean[:-3]
             clean = clean.strip()
+            # Also try extracting JSON object directly if still wrapped
+            if not clean.startswith("{"):
+                import re
+                match = re.search(r'\{.*\}', clean, re.DOTALL)
+                if match:
+                    clean = match.group(0)
 
             result = json.loads(clean)
             return {
