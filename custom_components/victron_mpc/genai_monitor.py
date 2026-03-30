@@ -114,7 +114,10 @@ the overall strategy makes sense.
 - R2900 (ESS BatteryLife State): MUST be 10 or 12 (BL disabled). \
   If 2 = BatteryLife active (overriding MPC). If 9 = Keep Charged (grid charging at max rate). \
   Either is CRITICAL RED.
-- R2901 (ESS Min SoC): readback must match target register (within 2%). \
+- R2901 (ESS Min SoC): ENCODING: register value = SoC% x 10 (e.g., 290 = 29.0%, 300 = 30%, \
+  800 = 80%, 1000 = 100%). The "Target Register (R2901 written)" field shows the raw register \
+  value; "R2901 Readback" shows the percentage. To compare: divide written value by 10, then \
+  compare to readback %. They must match within 2%. \
   If different, something is overriding (BatteryLife or rogue process). RED.
 - R2901 must be BELOW SoC during discharge/hold/solar_charge. \
   If R2901 >= SoC and mode is NOT grid_charge, system is grid-charging unintentionally. RED.
