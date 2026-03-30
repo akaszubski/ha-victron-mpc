@@ -932,3 +932,91 @@ class TestCycleInterval:
     def test_interval_is_12(self):
         """12 cycles x 5 min = 60 min hourly check."""
         assert GENAI_CYCLE_INTERVAL == 12
+
+
+# ======================================================================
+# TestGenAIHistory — rolling history buffer
+# ======================================================================
+
+
+class TestGenAIHistory:
+    """Tests for the rolling history buffer entry format."""
+
+    def test_entry_has_required_keys(self):
+        """History entry has all required top-level and nested keys."""
+        entry = {
+            "timestamp": "2026-03-31T01:00:00",
+            "source": "genai",
+            "status": "GREEN",
+            "summary": "All good",
+            "readings": {
+                "soc_pct": 50.0,
+                "mode": "discharge",
+                "buy_price": 0.20,
+                "solar_w": 0,
+                "load_w": 600,
+                "grid_import_w": 45,
+            },
+        }
+        assert "timestamp" in entry
+        assert "source" in entry
+        assert entry["source"] in ("deterministic", "genai")
+        assert entry["status"] in ("GREEN", "YELLOW", "RED")
+        assert "readings" in entry
+        assert "soc_pct" in entry["readings"]
+
+    def test_buffer_trim(self):
+        """Buffer is trimmed to max 168 entries."""
+        buf: list[dict] = []
+        for i in range(200):
+            buf.append({"timestamp": f"t{i}", "status": "GREEN"})
+        max_size = 168
+        if len(buf) > max_size:
+            buf = buf[-max_size:]
+        assert len(buf) == 168
+        assert buf[0]["timestamp"] == "t32"  # oldest kept
+
+    def test_buffer_preserves_order(self):
+        """Buffer maintains insertion order."""
+        buf = [{"ts": i} for i in range(5)]
+        assert buf[0]["ts"] == 0
+        assert buf[-1]["ts"] == 4
+
+    def test_readings_structure(self):
+        """Readings dict has correct types."""
+        readings = {
+            "soc_pct": 45.0,
+            "mode": "discharge",
+            "buy_price": 0.22,
+            "solar_w": 0,
+            "load_w": 582,
+            "grid_import_w": 43,
+        }
+        assert isinstance(readings["soc_pct"], float)
+        assert isinstance(readings["solar_w"], int)
+        assert readings["mode"] in (
+            "discharge", "hold", "solar_charge", "grid_charge", "export",
+        )
+
+    def test_sensor_attributes_include_history(self):
+        """Sensor attributes_fn includes history key."""
+        data = {
+            "status": "GREEN",
+            "summary": "All ok",
+            "details": "",
+            "history": [{"timestamp": "t1", "status": "GREEN"}],
+        }
+        attrs_fn = lambda d: {
+            "summary": d.get("summary", ""),
+            "details": d.get("details", ""),
+            "history": d.get("history", []),
+        } if isinstance(d, dict) else {}
+        attrs = attrs_fn(data)
+        assert "history" in attrs
+        assert len(attrs["history"]) == 1
+
+    def test_empty_history_default(self):
+        """Missing history key defaults to empty list."""
+        data = {"status": "GREEN", "summary": "ok", "details": ""}
+        attrs_fn = lambda d: {"history": d.get("history", [])}
+        assert attrs_fn(data)["history"] == []

@@ -134,6 +134,7 @@ SENSOR_DESCRIPTIONS: tuple[VictronMPCSensorDescription, ...] = (
             "summary": data.get("summary", ""),
             "details": data.get("details", ""),
             "last_check": datetime.now().isoformat(),
+            "history": data.get("history", []),
         }
         if isinstance(data, dict)
         else {},

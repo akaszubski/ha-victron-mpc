@@ -178,6 +178,8 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._genai_cycle_count = 0
         self._last_genai_result: dict[str, str] = {}
         self._genai_consecutive_red = 0
+        self._genai_history: list[dict[str, Any]] = []
+        self._genai_history_max = 168  # 7 days x 24 hourly checks
         self._amber_forecast_log_max = 2016  # 7 days × 288 cycles/day
 
     async def _async_setup(self) -> None:
@@ -563,6 +565,13 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "source": "deterministic",
                 }
                 self._genai_consecutive_red += 1
+                self._append_genai_history(
+                    "deterministic", "RED", first_red["reason"],
+                    soc_pct, mode, buy_price_now,
+                    int(forecasts.get("current_solar_w", 0)),
+                    int(forecasts.get("current_load_w", 0)),
+                    extra.get("grid_import_w", 0),
+                )
                 LOGGER.warning("Deterministic RED: %s", first_red["reason"])
                 if self._genai_consecutive_red >= 2:
                     await self._notify(
@@ -613,6 +622,14 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             "details": genai_result.get("details", ""),
                             "source": "genai",
                         }
+                    self._append_genai_history(
+                        "genai", genai_result.get("status", "?"),
+                        genai_result.get("summary", ""),
+                        soc_pct, mode, buy_price_now,
+                        int(forecasts.get("current_solar_w", 0)),
+                        int(forecasts.get("current_load_w", 0)),
+                        extra.get("grid_import_w", 0),
+                    )
                     LOGGER.info(
                         "GenAI strategic: %s -- %s",
                         genai_result.get("status"),
@@ -746,6 +763,36 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except (ValueError, TypeError):
                 pass
         return 0.0
+
+    def _append_genai_history(
+        self,
+        source: str,
+        status: str,
+        summary: str,
+        soc_pct: float,
+        mode: str,
+        buy_price: float,
+        solar_w: int,
+        load_w: int,
+        grid_import_w: int,
+    ) -> None:
+        """Append health check result to rolling history buffer."""
+        self._genai_history.append({
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "source": source,
+            "status": status,
+            "summary": summary,
+            "readings": {
+                "soc_pct": round(soc_pct, 1),
+                "mode": mode,
+                "buy_price": round(buy_price, 4),
+                "solar_w": solar_w,
+                "load_w": load_w,
+                "grid_import_w": grid_import_w,
+            },
+        })
+        if len(self._genai_history) > self._genai_history_max:
+            self._genai_history = self._genai_history[-self._genai_history_max:]
 
     def _get_r2901_readback(self) -> float:
         """Read R2901 from the Modbus sensor."""
@@ -1316,7 +1363,10 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "modbus_healthy": self.modbus_healthy,
             "modbus_failures": self._modbus_consecutive_failures,
             "amber_forecast_log_entries": len(self._amber_forecast_log),
-            "genai_health": self._last_genai_result,
+            "genai_health": {
+                **self._last_genai_result,
+                "history": self._genai_history,
+            },
         }
 
     # ------------------------------------------------------------------
