@@ -79,7 +79,7 @@ def build_health_snapshot(
 
     # Extract battery plan for feedin register
     battery_plan = coordinator_data.get("battery_plan", {})
-    feedin_register = battery_plan.get("feedin_register", coordinator_data.get("feedin_register", "?")) if isinstance(battery_plan, dict) else "?"
+    feedin_register = battery_plan.get("feedin_register", "?") if isinstance(battery_plan, dict) else coordinator_data.get("feedin_register", "?")
 
     lines = [
         f"Timestamp: {datetime.now().isoformat()}",
@@ -291,7 +291,8 @@ async def run_genai_health_check(
     try:
         payload = {
             "model": "anthropic/claude-haiku-4.5",
-            "max_tokens": 300,
+            "max_tokens": 800,
+            "stream": False,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": f"Current system snapshot:\n\n{snapshot}"},
@@ -305,7 +306,7 @@ async def run_genai_health_check(
                 "Authorization": f"Bearer {api_key}",
                 "content-type": "application/json",
             },
-            timeout=30,
+            timeout=60,
         ) as resp:
             if resp.status != 200:
                 body = await resp.text()
@@ -318,6 +319,7 @@ async def run_genai_health_check(
 
             data = await resp.json()
             text = data["choices"][0]["message"]["content"]
+            _LOGGER.info("GenAI raw response (%d chars): %s", len(text), repr(text[:500]))
 
             # Parse JSON response — strip markdown code blocks if present
             clean = text.strip()
@@ -341,12 +343,26 @@ async def run_genai_health_check(
                 "details": result.get("details", ""),
             }
 
-    except json.JSONDecodeError as exc:
+    except json.JSONDecodeError:
+        # Response may be truncated by max_tokens — try to extract status and summary
+        import re as _re
+        status_m = _re.search(r'"status"\s*:\s*"(GREEN|YELLOW|RED)"', text)
+        summary_m = _re.search(r'"summary"\s*:\s*"([^"]+)"', text)
+        if status_m:
+            _LOGGER.info(
+                "GenAI: recovered truncated response: %s",
+                status_m.group(1),
+            )
+            return {
+                "status": status_m.group(1),
+                "summary": summary_m.group(1) if summary_m else "(truncated)",
+                "details": "(response truncated by token limit)",
+            }
         _LOGGER.warning(
             "GenAI health check returned non-JSON: %s",
-            text[:200] if text else str(exc),
+            text[:200] if text else "empty",
         )
-        return {"status": "ERROR", "summary": "Non-JSON response from API", "details": str(exc)}
+        return {"status": "ERROR", "summary": "Non-JSON response from API", "details": text[:200] if text else ""}
     except Exception as exc:
         _LOGGER.warning("GenAI health check failed: %s", exc)
         return {"status": "ERROR", "summary": str(exc), "details": ""}

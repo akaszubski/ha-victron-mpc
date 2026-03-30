@@ -406,7 +406,8 @@ class TestRunGenaiHealthCheck:
         call_kwargs = session.post.call_args
         payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
         assert payload["model"] == "anthropic/claude-haiku-4.5"
-        assert payload["max_tokens"] == 300
+        assert payload["max_tokens"] == 800
+        assert payload["stream"] is False
 
     @pytest.mark.asyncio
     async def test_uses_openrouter_url(self):
