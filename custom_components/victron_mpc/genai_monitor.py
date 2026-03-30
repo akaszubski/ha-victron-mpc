@@ -34,42 +34,94 @@ def build_health_snapshot(
     Returns:
         Formatted string snapshot for the prompt.
     """
+    # Extract from nested coordinator data structure
+    decision = coordinator_data.get("decision", {})
+    if isinstance(decision, dict) and "state" in decision:
+        # Full nested dict from _build_sensor_data
+        mode = decision.get("state", "unknown")
+        soc_pct = decision.get("battery_soc_pct", "?")
+        target_register = decision.get("target_register", "?")
+        spike = decision.get("spike", False)
+        shadow_mode = decision.get("shadow_mode", "?")
+        schedule = decision.get("schedule_30min", "")
+        soc_1h = decision.get("soc_1h_pct", "?")
+        soc_2h = decision.get("soc_2h_pct", "?")
+        grid_import_w = decision.get("grid_import_w", extra.get("grid_import_w", "?"))
+    else:
+        # Flat dict (from test scenarios)
+        mode = coordinator_data.get("mode", "unknown")
+        soc_pct = coordinator_data.get("battery_soc_pct", "?")
+        target_register = coordinator_data.get("target_register", "?")
+        spike = coordinator_data.get("spike", False)
+        shadow_mode = coordinator_data.get("shadow_mode", "?")
+        schedule = coordinator_data.get("schedule_30min", "")
+        soc_1h = coordinator_data.get("soc_1h_pct", "?")
+        soc_2h = coordinator_data.get("soc_2h_pct", "?")
+        grid_import_w = extra.get("grid_import_w", "?")
+
+    # Extract buy/sell price (may be nested dict or scalar)
+    buy_price_raw = coordinator_data.get("buy_price", "?")
+    buy_price = buy_price_raw.get("state", buy_price_raw) if isinstance(buy_price_raw, dict) else buy_price_raw
+    sell_price_raw = coordinator_data.get("sell_price", "?")
+    sell_price = sell_price_raw.get("state", sell_price_raw) if isinstance(sell_price_raw, dict) else sell_price_raw
+
+    # Extract cloud (may be nested)
+    cloud_raw = coordinator_data.get("cloud_coverage", "?")
+    cloud_pct = cloud_raw.get("state", cloud_raw) if isinstance(cloud_raw, dict) else cloud_raw
+
+    # Extract solar forecast (may be nested)
+    solar_raw = coordinator_data.get("solar_forecast_today", "?")
+    solar_forecast = solar_raw.get("state", solar_raw) if isinstance(solar_raw, dict) else solar_raw
+
+    # Extract solar/load input (scalar)
+    solar_w = coordinator_data.get("solar_input_w", 0)
+    load_w = coordinator_data.get("load_input_w", "?")
+
+    # Extract battery plan for feedin register
+    battery_plan = coordinator_data.get("battery_plan", {})
+    feedin_register = battery_plan.get("feedin_register", coordinator_data.get("feedin_register", "?")) if isinstance(battery_plan, dict) else "?"
+
     lines = [
         f"Timestamp: {datetime.now().isoformat()}",
-        f"Mode: {coordinator_data.get('mode', 'unknown')}",
-        f"SoC: {coordinator_data.get('battery_soc_pct', '?')}%",
-        f"Target Register (R2901 written): {coordinator_data.get('target_register', '?')}",
+        f"Mode: {mode}",
+        f"SoC: {soc_pct}%",
+        f"Target Register (R2901 written): {target_register}",
         f"R2901 Readback: {extra.get('r2901_readback_pct', '?')}%",
         f"R2900 (ESS Mode): {extra.get('r2900', '?')} (should be 10 or 12)",
         f"R37 Power Setpoint: {extra.get('r37_setpoint_w', '?')}W",
-        f"Battery Power: {coordinator_data.get('battery_power_w', '?')}W (negative=discharge)",
-        f"Grid Import: {extra.get('grid_import_w', '?')}W",
+        f"Battery Power: {extra.get('battery_power_w', '?')}W (negative=discharge)",
+        f"Grid Import: {grid_import_w}W",
         f"Grid Export: {extra.get('grid_export_w', 0)}W",
-        f"Solar: {coordinator_data.get('solar_input_w', 0)}W",
-        f"Load: {coordinator_data.get('load_input_w', '?')}W",
-        f"Buy Price: ${coordinator_data.get('buy_price', '?')}/kWh",
-        f"Sell Price: ${coordinator_data.get('sell_price', '?')}/kWh",
-        f"Cloud: {coordinator_data.get('cloud_coverage', '?')}%",
+        f"Solar: {solar_w}W",
+        f"Load: {load_w}W",
+        f"Buy Price: ${buy_price}/kWh",
+        f"Sell Price: ${sell_price}/kWh",
+        f"Cloud: {cloud_pct}%",
         f"Weather: {extra.get('weather', '?')}",
-        f"Solar Forecast Today: {coordinator_data.get('solar_forecast_today', '?')} kWh",
+        f"Solar Forecast Today: {solar_forecast} kWh",
         f"Solar Yield So Far: {extra.get('solar_yield_kwh', '?')} kWh",
-        f"Spike: {coordinator_data.get('spike', False)}",
-        f"Shadow Mode: {coordinator_data.get('shadow_mode', '?')}",
+        f"Spike: {spike}",
+        f"Shadow Mode: {shadow_mode}",
         f"Amber Band: {extra.get('amber_band', '?')}",
         f"Mac Runner Found: {extra.get('mac_runner_found', False)}",
         f"YAML Automations ON: {extra.get('yaml_automations_on', [])}",
-        f"Feedin Register (R2706): {coordinator_data.get('feedin_register', '?')}",
+        f"Feedin Register (R2706): {feedin_register}",
         f"Hours Since Full Charge: {extra.get('hours_since_full_charge', '?')}",
     ]
 
     # Add trajectory if available
-    schedule = coordinator_data.get("schedule_30min")
-    if schedule:
-        lines.append(f"Planned trajectory (next 8h): {schedule[:16]}")
+    if schedule and schedule != "":
+        lines.append(f"Planned trajectory (next 8h): {schedule[:500]}")
 
-    # Add solar forecast for next few hours
+    # Add SoC lookahead
+    if soc_1h != "?":
+        lines.append(f"SoC in 1h: {soc_1h}%")
+    if soc_2h != "?":
+        lines.append(f"SoC in 2h: {soc_2h}%")
+
+    # Add solar forecast hourly from decision attributes
     for key in ("forecast_1h_w", "forecast_2h_w", "forecast_3h_w", "forecast_4h_w"):
-        val = coordinator_data.get(key)
+        val = decision.get(key) if isinstance(decision, dict) else coordinator_data.get(key)
         if val is not None:
             lines.append(f"Solar {key}: {val}W")
 

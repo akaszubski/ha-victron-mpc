@@ -531,6 +531,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         "r37_setpoint_w": self._get_r37_setpoint(),
                         "grid_import_w": grid_import_w,
                         "grid_export_w": self._get_grid_export(),
+                        "battery_power_w": self._get_battery_power(),
                         "weather": forecasts.get("weather_condition", "unknown"),
                         "solar_yield_kwh": self._get_solar_yield(),
                     }
@@ -748,6 +749,16 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Read grid export power."""
         try:
             state = self.hass.states.get("sensor.victron_grid_export")
+            if state and state.state not in ("unknown", "unavailable"):
+                return int(float(state.state))
+            return 0
+        except (ValueError, AttributeError):
+            return 0
+
+    def _get_battery_power(self) -> int:
+        """Read battery power from Modbus sensor."""
+        try:
+            state = self.hass.states.get("sensor.victron_battery_power")
             if state and state.state not in ("unknown", "unavailable"):
                 return int(float(state.state))
             return 0

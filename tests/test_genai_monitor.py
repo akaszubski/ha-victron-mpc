@@ -80,6 +80,97 @@ class TestBuildHealthSnapshot:
 
         assert "Planned trajectory" not in snapshot
 
+    def test_snapshot_reads_nested_coordinator_data(self):
+        """Regression: build_health_snapshot must read from nested _build_sensor_data dicts.
+
+        The coordinator returns nested dicts like decision={state: ..., battery_soc_pct: ...}.
+        Previously the function read flat keys (coordinator_data.get('mode')) which returned None.
+        """
+        coordinator_data = {
+            "battery_plan": {
+                "state": 70.7,
+                "mode": "discharge",
+                "target_register": 300,
+                "feedin_register": 0,
+                "shadow_mode": False,
+                "soc_1h_pct": 60,
+            },
+            "decision": {
+                "state": "discharge",
+                "reason": "Evening peak discharge",
+                "target_soc_pct": 70.7,
+                "target_register": 300,
+                "buy_price_actual": 0.28,
+                "sell_price_actual": 0.08,
+                "spike": False,
+                "shadow_mode": False,
+                "battery_soc_pct": 74,
+                "current_solar_w": 0,
+                "current_load_w": 400,
+                "grid_import_w": 50,
+                "schedule_30min": "[70, 68, 65, 62]",
+                "soc_1h_pct": 60,
+                "soc_2h_pct": 48,
+                "forecast_1h_w": 0,
+                "forecast_2h_w": 500,
+            },
+            "solar_input_w": 0,
+            "load_input_w": 400,
+            "buy_price": {"state": 0.28, "spike": False},
+            "sell_price": {"state": 0.08},
+            "cloud_coverage": {"state": 46.8, "weather_condition": "fog"},
+            "solar_forecast_today": {"state": 22.78},
+            "solve_time_ms": 1233,
+            "genai_health": {},
+        }
+        extra = {
+            "r2901_readback_pct": 30.0,
+            "r2900": 10,
+            "r37_setpoint_w": 50,
+            "grid_import_w": 45,
+            "grid_export_w": 0,
+            "battery_power_w": -1500,
+            "weather": "fog",
+            "solar_yield_kwh": 5.2,
+        }
+
+        snapshot = build_health_snapshot(coordinator_data, extra)
+
+        # Mode extracted from decision.state, not flat coordinator_data.get('mode')
+        assert "Mode: discharge" in snapshot
+        # SoC from decision.battery_soc_pct
+        assert "SoC: 74%" in snapshot
+        # Target register from decision
+        assert "Target Register (R2901 written): 300" in snapshot
+        # Buy/sell price from nested dict .state
+        assert "Buy Price: $0.28/kWh" in snapshot
+        assert "Sell Price: $0.08/kWh" in snapshot
+        # Cloud from nested dict .state
+        assert "Cloud: 46.8%" in snapshot
+        # Solar forecast from nested dict .state
+        assert "Solar Forecast Today: 22.78 kWh" in snapshot
+        # Spike from decision
+        assert "Spike: False" in snapshot
+        # Shadow mode from decision
+        assert "Shadow Mode: False" in snapshot
+        # Feedin register from battery_plan
+        assert "Feedin Register (R2706): 0" in snapshot
+        # Grid import from decision (not extra)
+        assert "Grid Import: 50W" in snapshot
+        # Battery power from extra
+        assert "Battery Power: -1500W" in snapshot
+        # Solar/load from scalar keys
+        assert "Solar: 0W" in snapshot
+        assert "Load: 400W" in snapshot
+        # Trajectory from decision.schedule_30min
+        assert "Planned trajectory" in snapshot
+        # SoC lookahead
+        assert "SoC in 1h: 60%" in snapshot
+        assert "SoC in 2h: 48%" in snapshot
+        # Solar forecast hourly from decision attributes
+        assert "Solar forecast_1h_w: 0W" in snapshot
+        assert "Solar forecast_2h_w: 500W" in snapshot
+
 
 class TestRunGenaiHealthCheck:
     """Tests for run_genai_health_check."""
