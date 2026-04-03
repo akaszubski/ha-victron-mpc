@@ -36,7 +36,7 @@ class FuelPriceClient:
         sw_lat: float = -37.85,
         sw_lng: float = 145.05,
     ) -> None:
-        """Initialize with bounding box (defaults to Mitcham/Blackburn area)."""
+        """Initialize with bounding box for nearby fuel station search."""
         self._session = session
         self._params = {
             "neLat": ne_lat,

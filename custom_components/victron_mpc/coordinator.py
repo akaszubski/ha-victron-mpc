@@ -212,7 +212,16 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
         # Fuel price client (PetrolSpy — free, no key)
-        self._fuel_price_client = FuelPriceClient(session=session)
+        # Derive bounding box from HA location (~5km radius)
+        ha_lat = self.hass.config.latitude
+        ha_lng = self.hass.config.longitude
+        self._fuel_price_client = FuelPriceClient(
+            session=session,
+            ne_lat=ha_lat + 0.05,
+            ne_lng=ha_lng + 0.05,
+            sw_lat=ha_lat - 0.05,
+            sw_lng=ha_lng - 0.05,
+        )
 
         # Fast startup: write safe register immediately to prevent
         # unintended grid charging during the 2-3 min until the first

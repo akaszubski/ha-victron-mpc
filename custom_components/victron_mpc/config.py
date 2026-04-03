@@ -35,7 +35,7 @@ class VictronSystem:
     # Fuel: ~1.3-2.0 L/hr diesel depending on load. ~20L tank.
     # Cost = (diesel_price × consumption_lph) / output_kw + maintenance
     # At typical 50-75% load: (~$2.20 × 1.5) / 4.0 + $0.05 ≈ $0.88/kWh
-    genset_diesel_price_per_litre: float = 2.20  # AUD — Melbourne retail
+    genset_diesel_price_per_litre: float = 2.20  # AUD — local retail default
     genset_consumption_lph: float = 1.5  # Litres/hour at typical 50-75% load
     genset_output_kw: float = 4.0  # Effective output at typical load
     genset_maintenance_per_kwh: float = 0.05  # Oil, filters, servicing allowance

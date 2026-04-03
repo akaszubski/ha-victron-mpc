@@ -385,8 +385,8 @@ def build_health_snapshot(
 
 
 SYSTEM_PROMPT = """\
-You are a strategic advisor for a home battery system (Victron Quattro 48/8000, \
-14.2kWh Pylontech, Amber Electric wholesale pricing, 7kW solar shaded until ~11am).
+You are a strategic advisor for a home battery system with Victron ESS \
+and Amber Electric wholesale pricing.
 
 All operational checks have PASSED — registers, power flows, and safety conditions \
 are verified by deterministic monitors. Your job is ONLY strategic review.

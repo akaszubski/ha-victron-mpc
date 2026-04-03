@@ -811,7 +811,7 @@ class ForecastBuilder:
                 return day_type
 
             # Estimate expected yield by now using sin^2 cumulative model
-            solar_start = 6.5  # Melbourne sunrise ~6:30 in March
+            solar_start = 6.5  # Approximate sunrise for cumulative yield model
             solar_end = 18.5
             solar_length = solar_end - solar_start
             elapsed = min(current_hour_f - solar_start, solar_length)

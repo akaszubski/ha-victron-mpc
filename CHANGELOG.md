@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-04-03
+
+### Changed
+
+- **First public release**: Version bump from 0.x to 1.0.0 signalling production readiness.
+- **Generalised geographic references**: Removed hardcoded city/country names from advisor and GenAI prompts. PetrolSpy fuel price bounding box now derived from Home Assistant location instead of hardcoded coordinates. (#39)
+- **Amber Electric disclaimer**: README now includes a prominent notice that Amber Electric (Australia) is required. (#40)
+
+### Added
+
+- **GitHub issue templates**: Bug report and feature request templates for structured community reporting. (#41)
+- **CONTRIBUTING.md**: Development setup, testing workflow, coding standards, and PR process. (#41)
+
 ## [0.5.1] - 2026-03-20
 
 ### Changed
@@ -93,6 +106,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Diagnostics**: Downloadable diagnostics dump with redacted credentials
 - **Documentation**: Setup guide, technical deep-dive, tuning guide, troubleshooting, full entity reference with example Lovelace cards
 
+[1.0.0]: https://github.com/akaszubski/ha-victron-mpc/releases/tag/v1.0.0
 [0.5.1]: https://github.com/akaszubski/ha-victron-mpc/releases/tag/v0.5.1
 [0.5.0]: https://github.com/akaszubski/ha-victron-mpc/releases/tag/v0.5.0
 [0.4.1]: https://github.com/akaszubski/ha-victron-mpc/releases/tag/v0.4.1

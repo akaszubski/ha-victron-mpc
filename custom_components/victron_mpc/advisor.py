@@ -109,7 +109,7 @@ class AdvisorSnapshot:
         return "\n".join(lines)
 
 
-ADVISOR_SYSTEM_PROMPT = """You are a real-time energy advisor for a home battery system in Melbourne, Australia.
+ADVISOR_SYSTEM_PROMPT = """You are a real-time energy advisor for a home battery system.
 
 You review the LP optimizer's mathematical decision and suggest bounded adjustments
 based on qualitative factors, learned patterns, and operational knowledge the LP
@@ -152,7 +152,7 @@ Genset: Commodore CD6500 diesel, ~5.7 kW rated.
   - Weekly 5-min test run Sunday ~midday (not an alarm).
   - MPC does NOT control the genset. It's an independent safety net.
 
-Retailer: Amber Electric wholesale pricing (Melbourne).
+Retailer: Amber Electric wholesale pricing.
   - 30-minute interval pricing, ~20-30h forecast horizon.
 
 ═══════════════════════════════════════════════════════════════════

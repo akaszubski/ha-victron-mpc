@@ -6,6 +6,8 @@
 
 A HACS custom integration that uses **Model Predictive Control** to minimize electricity costs for **Victron ESS** systems with **Amber Electric** wholesale pricing. Every 5 minutes, a Linear Program computes the optimal 24-hour battery dispatch plan and writes Modbus registers directly to your Victron Cerbo GX.
 
+> **Important:** This integration requires [Amber Electric](https://www.amber.com.au/), an Australian wholesale energy retailer. It is designed for Australian users with Amber pricing entities configured in Home Assistant. The LP optimizer could be adapted for other wholesale pricing sources in future — contributions welcome.
+
 ## Why this integration?
 
 If you have a Victron battery system and Amber Electric, you are exposed to volatile wholesale pricing -- spikes above $5/kWh, negative prices where you are paid to consume, and everything in between. The built-in Victron ESS "minimum SoC" setting is static and cannot respond to price signals.
