@@ -1,4 +1,4 @@
-"""Tests for GitHub issues #31-#35 fixes.
+"""Tests for GitHub issues #31-#35, #43 fixes.
 
 Covers:
 - #31: Overnight min SoC raised to 31%, bounds expanded
@@ -217,3 +217,49 @@ class TestIssue35HotWaterConfig:
         assert t.hot_water_boost_kw == 3.0
         assert t.hot_water_start_hour == 7.0
         assert t.hot_water_duration_minutes == 15.0
+
+
+# ──────────────────────────────────────────────────────────────────
+# #43: Solar forecast remaining not zeroed after sunset
+# ──────────────────────────────────────────────────────────────────
+
+class TestIssue43SolarForecastToday:
+    """solar_forecast_today should only sum today's remaining steps, not
+    tomorrow's solar from the rolling 24h horizon."""
+
+    def test_after_sunset_sum_is_near_zero(self):
+        """At 20:00 with 4h until midnight, all solar steps are 0 →
+        solar_forecast_kwh should be 0."""
+        dt_minutes = 5
+        dt_hours = dt_minutes / 60.0
+        # 24h forecast: first 48 steps (4h until midnight) are 0,
+        # then tomorrow's solar kicks in at step 48+
+        solar_kw = [0.0] * 48 + [2.0] * 72 + [0.0] * 168  # 288 steps total
+        # At 20:00, minutes_until_midnight = 240, steps = 48
+        minutes_until_midnight = 240
+        steps_until_midnight = min(minutes_until_midnight // dt_minutes, len(solar_kw))
+        result = round(sum(solar_kw[:steps_until_midnight]) * dt_hours, 2)
+        assert result == 0.0, f"Expected 0 after sunset, got {result}"
+
+    def test_midday_sum_includes_afternoon(self):
+        """At 12:00 with 12h until midnight, sum includes afternoon solar."""
+        dt_minutes = 5
+        dt_hours = dt_minutes / 60.0
+        # At 12:00, steps until midnight = 144
+        # First 72 steps (6h, 12:00-18:00) have 3kW solar
+        solar_kw = [3.0] * 72 + [0.0] * 216  # 288 steps
+        minutes_until_midnight = 720
+        steps_until_midnight = min(minutes_until_midnight // dt_minutes, len(solar_kw))
+        result = round(sum(solar_kw[:steps_until_midnight]) * dt_hours, 2)
+        # 72 steps × 3kW × (5/60)h = 18.0 kWh
+        assert result == 18.0, f"Expected 18.0 at midday, got {result}"
+
+    def test_full_horizon_would_overcount(self):
+        """Verify the old approach (sum all) would have shown tomorrow's solar."""
+        dt_hours = 5 / 60.0
+        solar_kw = [0.0] * 48 + [2.0] * 72 + [0.0] * 168
+        old_result = round(sum(solar_kw) * dt_hours, 2)
+        assert old_result == 12.0, "Old sum-all should include tomorrow"
+        # New approach: only first 48 steps (4h until midnight at 20:00)
+        new_result = round(sum(solar_kw[:48]) * dt_hours, 2)
+        assert new_result == 0.0, "New today-only should be 0"

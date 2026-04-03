@@ -1281,9 +1281,17 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 round(float(solar_kw[idx]) * 1000) if solar_kw else 0
             )
 
-        # Solar forecast daily total (sum kW × dt_hours)
+        # Solar forecast remaining TODAY (not full 24h horizon).
+        # The forecast array is a rolling 24h window from now, so after
+        # sunset it includes tomorrow's solar. Clamp to steps until midnight
+        # so the "today" attribute reads ~0 after dark.
+        now = datetime.now()
+        minutes_until_midnight = (24 - now.hour) * 60 - now.minute
+        steps_until_midnight = min(
+            minutes_until_midnight // tunables.dt_minutes, len(solar_kw)
+        )
         solar_forecast_kwh = round(
-            sum(solar_kw) * tunables.dt_hours, 2
+            sum(solar_kw[:steps_until_midnight]) * tunables.dt_hours, 2
         ) if solar_kw else 0.0
 
         reason = override_reason if override_reason else result.reason
