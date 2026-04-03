@@ -432,10 +432,16 @@ SoC may drop to 30-40% before overnight hold kicks in.
 - SoC only reaching 75% on a cloudy day — system adapts, not a failure
 - Gentle overnight SoC decline — inverter efficiency losses, normal physics
 
-Given the current mode, SoC, price, and planned trajectory: \
-is there a GENUINE strategic concern beyond the normal daily pattern?
+Your default answer is GREEN. The system is well-tuned and operates correctly \
+the vast majority of the time. Return GREEN unless you can identify something \
+clearly wrong that does not match ANY of the normal phases above.
 
-Keep it brief — one sentence if GREEN, 2-3 sentences only if genuinely unusual.
+YELLOW means: "this specific condition will cause meaningful financial loss or \
+miss a critical target if not addressed in the next 1-2 hours." A vague concern \
+or theoretical risk is not YELLOW — it must be concrete and imminent. If in doubt, \
+return GREEN.
+
+Keep it brief — one sentence for GREEN, 2-3 sentences only for YELLOW.
 Never return RED — deterministic checks handle critical issues.
 
 Respond in JSON only:
