@@ -80,11 +80,20 @@ class TestRunDeterministicChecks:
         assert "50" in reds[0]["reason"]
 
     def test_r2901_equal_to_soc_during_solar_charge(self):
-        """R2901 == SoC in solar_charge mode is RED (>= check)."""
+        """R2901 == SoC in solar_charge mode is OK (strict > check)."""
         data = {"mode": "solar_charge", "battery_soc_pct": 30}
         extra = {"r2901_readback_pct": 30}
         results = run_deterministic_checks(data, extra)
-        assert any(r["check"] == "r2901_above_soc" for r in results)
+        assert not any(r["check"] == "r2901_above_soc" for r in results)
+
+    def test_r2901_strictly_above_soc(self):
+        """R2901 strictly above SoC during discharge is RED."""
+        data = {"mode": "discharge", "battery_soc_pct": 30}
+        extra = {"r2901_readback_pct": 31}
+        results = run_deterministic_checks(data, extra)
+        reds = [r for r in results if r["check"] == "r2901_above_soc"]
+        assert len(reds) == 1
+        assert reds[0]["status"] == "RED"
 
     def test_r2901_above_soc_during_grid_charge_ok(self):
         """R2901 above SoC during grid_charge is expected, not RED."""
@@ -135,6 +144,29 @@ class TestRunDeterministicChecks:
     def test_grid_import_during_hold_ok(self):
         """Grid import during hold mode is not flagged."""
         data = {"mode": "hold"}
+        extra = {"grid_import_w": 500}
+        results = run_deterministic_checks(data, extra)
+        assert not any(r["check"] == "grid_import_during_discharge" for r in results)
+
+    def test_grid_import_discharge_near_floor_ok(self):
+        """Grid import during discharge near 30% floor is OK (SoC=31)."""
+        data = {"mode": "discharge", "battery_soc_pct": 31}
+        extra = {"grid_import_w": 500}
+        results = run_deterministic_checks(data, extra)
+        assert not any(r["check"] == "grid_import_during_discharge" for r in results)
+
+    def test_grid_import_discharge_above_floor(self):
+        """Grid import during discharge well above floor is RED (SoC=40)."""
+        data = {"mode": "discharge", "battery_soc_pct": 40}
+        extra = {"grid_import_w": 500}
+        results = run_deterministic_checks(data, extra)
+        reds = [r for r in results if r["check"] == "grid_import_during_discharge"]
+        assert len(reds) == 1
+        assert reds[0]["status"] == "RED"
+
+    def test_grid_import_discharge_at_exact_floor(self):
+        """Grid import during discharge at exactly 30% floor is OK."""
+        data = {"mode": "discharge", "battery_soc_pct": 30}
         extra = {"grid_import_w": 500}
         results = run_deterministic_checks(data, extra)
         assert not any(r["check"] == "grid_import_during_discharge" for r in results)

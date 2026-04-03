@@ -131,13 +131,13 @@ def run_deterministic_checks(
             and r2901 != -1
             and soc is not None
             and mode not in ("grid_charge", "unknown")
-            and r2901 >= soc
+            and r2901 > soc
         ):
             results.append({
                 "check": "r2901_above_soc",
                 "status": "RED",
                 "reason": (
-                    f"R2901 readback ({r2901}%) >= SoC ({soc}%) during "
+                    f"R2901 readback ({r2901}%) > SoC ({soc}%) during "
                     f"{mode} mode. ESS is unintentionally grid-charging."
                 ),
             })
@@ -148,7 +148,9 @@ def run_deterministic_checks(
     try:
         grid_w = fields["grid_import_w"]
         mode = fields["mode"]
-        if mode == "discharge" and grid_w is not None and grid_w > 200:
+        soc_for_grid_check = fields.get("soc_pct")
+        near_floor = soc_for_grid_check is not None and soc_for_grid_check <= 33
+        if mode == "discharge" and grid_w is not None and grid_w > 200 and not near_floor:
             results.append({
                 "check": "grid_import_during_discharge",
                 "status": "RED",
