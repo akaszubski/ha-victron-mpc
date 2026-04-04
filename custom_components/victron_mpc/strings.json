@@ -93,7 +93,10 @@
       "sell_price": { "name": "Sell Price" },
       "cloud_coverage": { "name": "Cloud Coverage" },
       "solar_forecast_today": { "name": "Solar Forecast Today" },
-      "solve_time": { "name": "Solver Time" }
+      "solve_time": { "name": "Solver Time" },
+      "genai_health": { "name": "GenAI Health" },
+      "amber_forecast_accuracy": { "name": "Amber Forecast Accuracy" },
+      "appliance_monitor": { "name": "Appliance Monitor" }
     },
     "number": {
       "battery_wear_cost": { "name": "Battery Wear Cost" },
