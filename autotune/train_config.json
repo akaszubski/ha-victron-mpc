@@ -1,0 +1,26 @@
+{
+  "parameters": {
+    "battery_wear_cost": {"value": 0.02, "min": 0.01, "max": 0.10, "step": 0.005},
+    "grid_import_penalty": {"value": 0.02, "min": 0.00, "max": 0.05, "step": 0.005},
+    "sunset_reward": {"value": 0.04, "min": 0.01, "max": 0.10, "step": 0.01},
+    "terminal_reward": {"value": 0.03, "min": 0.01, "max": 0.10, "step": 0.005},
+    "overnight_hold_reward": {"value": 0.05, "min": 0.02, "max": 0.20, "step": 0.01},
+    "soc_floor_pct": {"value": 10.0, "min": 10.0, "max": 35.0, "step": 1.0},
+    "overnight_min_soc_pct": {"value": 31.0, "min": 20.0, "max": 50.0, "step": 1.0},
+    "load_inflation_pct": {"value": 10.0, "min": 5.0, "max": 25.0, "step": 1.0},
+    "solar_cloud_impact": {"value": 0.75, "min": 0.50, "max": 0.90, "step": 0.05},
+    "solar_derating_min": {"value": 0.50, "min": 0.30, "max": 0.70, "step": 0.05},
+    "soc_profile_peak": {"value": 0.15, "min": 0.05, "max": 0.30, "step": 0.01},
+    "soc_profile_pre_peak": {"value": 0.20, "min": 0.10, "max": 0.40, "step": 0.01},
+    "soc_profile_morning": {"value": 0.10, "min": 0.03, "max": 0.20, "step": 0.01},
+    "soc_profile_overnight": {"value": 0.03, "min": 0.01, "max": 0.10, "step": 0.005},
+    "soc_profile_default": {"value": 0.05, "min": 0.02, "max": 0.15, "step": 0.005},
+    "grid_charge_boost": {"value": 0.15, "min": 0.05, "max": 0.30, "step": 0.01},
+    "soft_floor_penalty": {"value": 0.10, "min": 0.05, "max": 0.30, "step": 0.01}
+  },
+  "evaluation": {
+    "fixed_wear_cost_per_kwh": 0.02,
+    "min_days": 14,
+    "improvement_threshold": 0.001
+  }
+}
