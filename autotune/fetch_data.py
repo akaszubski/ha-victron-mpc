@@ -40,7 +40,7 @@ def _vrm_get(token: str, inst_id: str, path: str) -> dict:
         urllib.error.HTTPError: On non-2xx response.
     """
     url = f"https://vrmapi.victronenergy.com/v2/installations/{inst_id}/{path}"
-    req = urllib.request.Request(url, headers={"x-authorization": f"Bearer {token}"})
+    req = urllib.request.Request(url, headers={"X-Authorization": f"Token {token}"})
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode())
 
