@@ -407,7 +407,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 minutes_down = (
                     datetime.now() - self._amber_unavailable_since
                 ).total_seconds() / 60
-                if minutes_down > tunables.amber_blip_minutes:
+                if minutes_down > max(tunables.amber_blip_minutes, 10.0):
                     LOGGER.warning(
                         "Amber unavailable for %.0f min — defensive mode active "
                         "(using $%.2f/kWh)",
@@ -451,6 +451,13 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 target_register = result.target_register
                 mode = result.mode
                 override_reason = None
+
+            # #37 hysteresis monitoring — log when BMS rounding triggers hold
+            if mode == "hold" and "BMS rounding" in (result.reason or ""):
+                LOGGER.info(
+                    "HYSTERESIS: SoC=%.1f%% near floor, holding instead of grid_charge",
+                    soc_pct,
+                )
 
             if override_reason:
                 LOGGER.info("Override: %s", override_reason)
@@ -746,7 +753,14 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             blip_min = getattr(self, "_tunables", None)
             blip_threshold = blip_min.amber_blip_minutes if blip_min else 5.0
+            blip_threshold = max(blip_threshold, 10.0)
             defensive_price = blip_min.defensive_price if blip_min else 2.00
+
+            if blip_min and blip_min.amber_blip_minutes < 10.0:
+                LOGGER.info(
+                    "Amber blip threshold floored: config=%.0f min, effective=10 min",
+                    blip_min.amber_blip_minutes,
+                )
 
             if minutes_down < blip_threshold:
                 # Tier 1: Brief blip — use last known price
@@ -1462,7 +1476,10 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 **self._last_genai_result,
                 "history": self._genai_history,
             },
-            "amber_forecast_accuracy": self._forecast_accuracy_cache,
+            "amber_forecast_accuracy": {
+                "state": self._forecast_accuracy_cache.get("entry_count", 0),
+                **self._forecast_accuracy_cache,
+            },
             "appliance_monitor": {
                 "state": (
                     self._appliance_log[-1]["running_count"]

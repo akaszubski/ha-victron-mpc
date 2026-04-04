@@ -172,7 +172,7 @@ _DEFAULTS: dict[str, float] = {
     "load_inflation_pct": 10,
     "spike_threshold": 1.00,
     "defensive_price": 2.00,
-    "amber_blip_minutes": 5,
+    "amber_blip_minutes": 10,
     "feedin_export_threshold": 0.10,
     "overnight_price_low": 0.15,
     "overnight_price_high": 0.25,
