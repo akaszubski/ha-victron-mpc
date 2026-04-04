@@ -35,6 +35,7 @@ class DayResult:
     min_soc_pct: float  # Lowest SoC reached (%)
     sunset_soc_pct: float  # SoC at sunset step (%)
     end_soc_kwh: float  # SoC at end of day (kWh) -- chains to next day
+    total_discharge_kwh: float = 0.0  # Total discharge over the day (kWh)
     solver_status: str = "optimal"
 
 

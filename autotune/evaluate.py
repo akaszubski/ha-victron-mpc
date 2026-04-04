@@ -13,6 +13,7 @@ from pathlib import Path
 
 from custom_components.victron_mpc.optimizer import OptInput, optimize
 
+from .metric import score_period
 from .types import DayData, DayResult, EvalResult
 
 # ──────────────────────────────────────────────────────────────────
@@ -248,6 +249,7 @@ def evaluate_day(
         min_soc_pct=round(min_soc_pct, 1),
         sunset_soc_pct=round(sunset_soc_pct, 1),
         end_soc_kwh=round(end_soc_kwh, 4),
+        total_discharge_kwh=round(total_discharge_kwh, 4),
         solver_status=result.solver_status,
     )
 
@@ -279,31 +281,10 @@ def evaluate_multi_day(
         results.append(day_result)
         current_soc_kwh = day_result.end_soc_kwh
 
-    # Composite metric: total net cost (lower is better)
-    total_grid = sum(r.grid_cost for r in results)
-    total_export = sum(r.export_revenue for r in results)
-    total_wear = sum(r.wear_cost_fixed for r in results)
-    total_floor_violations = sum(r.floor_violations for r in results)
-
-    # Penalty for floor violations: $0.01 per violation step
-    violation_penalty = total_floor_violations * 0.01
-
-    composite = total_grid - total_export + total_wear + violation_penalty
-
-    breakdown = {
-        "grid_cost": round(total_grid, 4),
-        "export_revenue": round(total_export, 4),
-        "wear_cost_fixed": round(total_wear, 4),
-        "floor_violations": total_floor_violations,
-        "violation_penalty": round(violation_penalty, 4),
-        "composite": round(composite, 4),
-    }
-
-    return EvalResult(
-        composite_metric=round(composite, 4),
-        breakdown=breakdown,
-        per_day=results,
-    )
+    # Use anti-gaming metric for composite scoring
+    start_soc = days[0].start_soc_kwh
+    end_soc = results[-1].end_soc_kwh
+    return score_period(results, start_soc, end_soc, len(days))
 
 
 def load_days(data_dir: Path) -> list[DayData]:
