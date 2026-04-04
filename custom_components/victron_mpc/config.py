@@ -113,7 +113,7 @@ class MPCTunables:
     spike_threshold: float = 1.00  # $/kWh — force discharge above this
     defensive_price: float = 2.00  # $/kWh — assumed price when Amber down
     fallback_price: float = 0.30  # $/kWh — used when no price data at all
-    amber_blip_minutes: float = 5.0  # Minutes before defensive mode
+    amber_blip_minutes: float = 10.0  # Minutes before defensive mode
     feedin_export_threshold: float = 0.10  # $/kWh — min FIT for spike export
     feedin_soc_threshold: float = 30.0  # % — min SoC to allow spike export
     overnight_price_low: float = 0.15  # $/kWh — full hold reward below

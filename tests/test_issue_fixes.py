@@ -263,3 +263,61 @@ class TestIssue43SolarForecastToday:
         # New approach: only first 48 steps (4h until midnight at 20:00)
         new_result = round(sum(solar_kw[:48]) * dt_hours, 2)
         assert new_result == 0.0, "New today-only should be 0"
+
+
+# ──────────────────────────────────────────────────────────────────
+# #37: Grid-charge hysteresis at floor
+# ──────────────────────────────────────────────────────────────────
+
+class TestGridChargeHysteresis:
+    """Issue #37: Don't grid_charge for 1% BMS dip below floor."""
+
+    def test_1pct_dip_stays_hold(self):
+        """SoC 1% below floor -> hold, not grid_charge."""
+        # SoC=29%, floor=30%, no solar, moderate price, load=1kW
+        inp = make_opt_input(
+            soc_pct=29.0, soc_min_pct=30.0,
+            solar_kw=0.0, load_kw=1.0,
+            buy_price=0.20, sell_price=0.04,
+            sunset_step=None,
+        )
+        out = optimize(inp)
+        assert out.mode != "grid_charge", (
+            f"Expected non-grid_charge for 1% dip, got {out.mode}"
+        )
+        # Register should be at/below floor, not above SoC
+        assert out.target_register <= 300  # 30% = 300
+
+    def test_2pct_dip_triggers_grid_charge(self):
+        """SoC 2% below floor -> grid_charge (genuine shortfall).
+
+        Cheap-now/expensive-soon prices + SoC reward create strong
+        incentive to grid_charge immediately. 2% gap exceeds the
+        hysteresis threshold so grid_charge proceeds normally.
+        """
+        prices = [0.05] * 12 + [0.80] * (STEPS_24H - 12)
+        inp = make_opt_input(
+            soc_pct=28.0, soc_min_pct=20.0,
+            solar_kw=0.0, load_kw=1.0,
+            buy_price=prices, sell_price=0.04,
+            sunset_step=None,
+            soc_target_reward=[0.50] * STEPS_24H,
+        )
+        out = optimize(inp)
+        # Should want to charge — 2% gap exceeds hysteresis threshold
+        assert out.mode == "grid_charge", (
+            f"Expected grid_charge for 2% dip, got {out.mode}"
+        )
+
+    def test_well_above_floor_unchanged(self):
+        """SoC well above floor -> normal discharge/hold behavior."""
+        inp = make_opt_input(
+            soc_pct=50.0, soc_min_pct=30.0,
+            solar_kw=0.0, load_kw=1.0,
+            buy_price=0.20, sell_price=0.04,
+            sunset_step=None,
+        )
+        out = optimize(inp)
+        assert out.mode in ("discharge", "hold"), (
+            f"SoC 50% should discharge/hold, got {out.mode}"
+        )

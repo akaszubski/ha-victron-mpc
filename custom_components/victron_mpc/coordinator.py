@@ -50,6 +50,9 @@ from .genai_monitor import (
 from .optimizer import OptInput, OptOutput, compute_sunset_target, optimize
 from .utils import scale_overnight_hold_reward
 
+# Amber three-tier escalation thresholds
+_AMBER_CAUTIOUS_MINUTES = 30.0
+_AMBER_CAUTIOUS_PRICE = 0.50
 
 
 def _build_soc_target_reward(
@@ -731,13 +734,15 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             defensive_price = blip_min.defensive_price if blip_min else 2.00
 
             if minutes_down < blip_threshold:
-                # Brief blip — use last known price
+                # Tier 1: Brief blip — use last known price
                 return (False, self._last_known_buy_price)
 
-            # Extended outage — ALWAYS assume spike risk.
-            # At $20/kWh, even 30 min on grid at 1kW = $10 loss.
-            # Battery wear from defensive discharge = $0.05/kWh = negligible.
-            # Asymmetric risk: always better to discharge than risk a spike.
+            if minutes_down < _AMBER_CAUTIOUS_MINUTES:
+                # Tier 2: Moderate outage — cautious but not panic
+                cautious_price = max(self._last_known_buy_price, _AMBER_CAUTIOUS_PRICE)
+                return (False, cautious_price)
+
+            # Tier 3: Extended outage — full defensive
             return (False, defensive_price)
 
         # Amber is available

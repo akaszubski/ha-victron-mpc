@@ -17,6 +17,9 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.optimize import linprog
 
+# Hysteresis for BMS integer rounding — don't grid_charge for ≤1% dip below floor
+GRID_CHARGE_HYSTERESIS_PCT = 1.0
+
 
 @dataclass
 class OptInput:
@@ -419,12 +422,20 @@ def _build_output(result, inputs: OptInput, solve_ms: float) -> OptOutput:
     # CRITICAL: The Victron ESS treats register > current SoC as "charge to
     # this level by any means". If solar can't keep up, it pulls from grid.
     # Only set register > SoC when we WANT grid charging.
+    hysteresis_hold = False
     if (p_charge[0] > 0.05
             and grid_import[0] > inputs.load_forecast_kw[0] + 0.1
             and inputs.solar_forecast_kw[0] < inputs.load_forecast_kw[0]):
-        # Grid charge mode — optimizer explicitly plans grid import above load.
-        # Set register ABOVE current SoC to force ESS to charge from grid.
-        target_register = _soc_to_register(target_soc_pct)
+        # Grid charge mode — but check for BMS hysteresis
+        soc_gap = target_soc_pct - soc_pct[0]
+        if soc_gap <= GRID_CHARGE_HYSTERESIS_PCT:
+            # Minor BMS rounding dip — hold instead of grid_charge
+            soc_floor_pct = inputs.soc_min_kwh / inputs.battery_capacity_kwh * 100
+            register_floor = max(10.0, soc_floor_pct - 1.0)
+            target_register = _soc_to_register(register_floor)
+            hysteresis_hold = True
+        else:
+            target_register = _soc_to_register(target_soc_pct)
     elif p_charge[0] > 0.05:
         # Solar charge — solar excess is charging battery.
         # Set register to hard floor so ESS doesn't pull from grid.
@@ -452,6 +463,11 @@ def _build_output(result, inputs: OptInput, solve_ms: float) -> OptOutput:
         inputs.buy_price[0], inputs.sell_price[0],
         soc_pct[0], target_soc_pct,
     )
+
+    # Override grid_charge to hold when hysteresis detected
+    if hysteresis_hold and mode == "grid_charge":
+        mode = "hold"
+        reason = f"BMS rounding ({target_soc_pct - soc_pct[0]:.1f}% gap), holding at floor"
 
     # Cost breakdown
     grid_cost = float(np.sum(grid_import * np.array(inputs.buy_price) * dt))
