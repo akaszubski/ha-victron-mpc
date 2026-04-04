@@ -410,12 +410,20 @@ Grid import drops to near zero. This ramp happens every day.
 Phase 4 — Peak Solar (13:00-16:00): Solar 3000-5000W, battery charges at 2-4kW. \
 SoC climbs to 80-100%. On cloudy days, may only reach 70-80% — this is fine.
 
-Phase 5 — Evening Peak (17:00-21:00): Battery discharges at $0.20-0.30/kWh. \
+Phase 5 — Evening Peak (17:00-21:00): TYPICALLY battery discharges at $0.20-0.30/kWh. \
 SoC drops from 80-100% toward 35-50%. Grid import near zero. \
-This is the primary value period — aggressive discharge is correct.
+HOWEVER: if Amber band is very_low or extremely_low, grid_charge is correct — \
+the LP buys cheap grid now to avoid higher prices overnight. Do NOT flag this.
 
 Phase 6 — Late Evening (21:00-22:00): Prices drop, discharge slows. \
 SoC may drop to 30-40% before overnight hold kicks in.
+
+## CRITICAL: Amber band overrides time-of-day assumptions
+
+Wholesale pricing is volatile — the Amber Band in the snapshot ALWAYS takes precedence \
+over typical time-of-day patterns above. \
+extremely_low/very_low at ANY hour: grid_charge is rational (grid_charge_boost active). \
+high/spike at ANY hour: discharge is expected. Grid_charge during high/spike IS a concern.
 
 ## WHEN TO FLAG YELLOW (genuine strategic concerns only)
 
@@ -431,6 +439,7 @@ SoC may drop to 30-40% before overnight hold kicks in.
 - Solar < 500W before 11am — trees, not clouds
 - SoC only reaching 75% on a cloudy day — system adapts, not a failure
 - Gentle overnight SoC decline — inverter efficiency losses, normal physics
+- Grid_charge during evening when Amber band is very_low or extremely_low — LP is buying cheap
 
 Your default answer is GREEN. The system is well-tuned and operates correctly \
 the vast majority of the time. Return GREEN unless you can identify something \
