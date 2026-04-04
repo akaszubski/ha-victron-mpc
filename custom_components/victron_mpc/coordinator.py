@@ -40,6 +40,7 @@ from .const import (
     REGISTER_MAX_FEED_IN,
     UPDATE_INTERVAL_MINUTES,
 )
+from .forecast_accuracy import compute_forecast_accuracy
 from .forecasts import ForecastBuilder
 from .genai_monitor import (
     GENAI_CYCLE_INTERVAL,
@@ -184,6 +185,11 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._genai_history: list[dict[str, Any]] = []
         self._genai_history_max = 168  # 7 days x 24 hourly checks
         self._amber_forecast_log_max = 2016  # 7 days × 288 cycles/day
+        self._forecast_accuracy_cache: dict = {}
+
+        # Appliance monitoring (Phase 0 — data collection)
+        self._appliance_log: list[dict[str, Any]] = []
+        self._appliance_log_max = 2016
 
     async def _async_setup(self) -> None:
         """One-time setup called during first refresh (HA 2024.8+).
@@ -528,6 +534,15 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Phase 7d: Log Amber forecast for accuracy tracking
             # ----------------------------------------------------------
             self._log_amber_forecast(forecasts)
+
+            # Compute forecast accuracy every 12 cycles (1 hour)
+            if self._cycle_count % 12 == 0 and len(self._amber_forecast_log) >= 100:
+                self._forecast_accuracy_cache = compute_forecast_accuracy(
+                    self._amber_forecast_log
+                )
+
+            # Phase 0: Appliance data collection
+            self._log_appliance_state()
 
             # ----------------------------------------------------------
             # Phase 7e+7f: Health monitoring (deterministic + GenAI)
@@ -1088,6 +1103,58 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception:
             pass  # Never crash the coordinator for logging
 
+    def _log_appliance_state(self) -> None:
+        """Log appliance power readings for Phase 0 data collection."""
+        try:
+            from .const import (
+                APPLIANCE_IDLE_W,
+                APPLIANCE_STANDBY_W,
+                DEFAULT_APPLIANCE_SENSORS,
+            )
+
+            now = datetime.now()
+            readings: dict[str, dict[str, Any]] = {}
+            running_count = 0
+
+            for entity_id in DEFAULT_APPLIANCE_SENSORS:
+                state = self.hass.states.get(entity_id)
+                if state is None or state.state in ("unavailable", "unknown"):
+                    readings[entity_id] = {"power_w": 0, "state": "unavailable"}
+                    continue
+                try:
+                    power = float(state.state)
+                except (ValueError, TypeError):
+                    readings[entity_id] = {"power_w": 0, "state": "error"}
+                    continue
+
+                if power < APPLIANCE_IDLE_W:
+                    appliance_state = "idle"
+                elif power < APPLIANCE_STANDBY_W:
+                    appliance_state = "standby"
+                else:
+                    appliance_state = "running"
+                    running_count += 1
+
+                readings[entity_id] = {
+                    "power_w": round(power, 1),
+                    "state": appliance_state,
+                }
+
+            entry = {
+                "timestamp": now.isoformat(),
+                "hour": now.hour,
+                "readings": readings,
+                "running_count": running_count,
+                "total_w": sum(r["power_w"] for r in readings.values()),
+            }
+
+            self._appliance_log.append(entry)
+            if len(self._appliance_log) > self._appliance_log_max:
+                self._appliance_log = self._appliance_log[-self._appliance_log_max :]
+
+        except Exception:
+            pass  # Never crash coordinator for logging
+
     async def _check_yaml_automations(self) -> None:
         """Detect and disable any re-enabled MPC YAML automations.
 
@@ -1394,6 +1461,25 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "genai_health": {
                 **self._last_genai_result,
                 "history": self._genai_history,
+            },
+            "amber_forecast_accuracy": self._forecast_accuracy_cache,
+            "appliance_monitor": {
+                "state": (
+                    self._appliance_log[-1]["running_count"]
+                    if self._appliance_log
+                    else 0
+                ),
+                "readings": (
+                    self._appliance_log[-1]["readings"]
+                    if self._appliance_log
+                    else {}
+                ),
+                "log_entries": len(self._appliance_log),
+                "recent_history": (
+                    self._appliance_log[-12:]
+                    if self._appliance_log
+                    else []
+                ),
             },
         }
 

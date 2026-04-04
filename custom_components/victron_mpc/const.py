@@ -79,3 +79,9 @@ DEFAULT_FEEDIN_SOC_THRESHOLD = 30  # % — min SoC to allow spike export
 DEFAULT_MODBUS_FAILURE_THRESHOLD = 3  # Consecutive failures before alerting
 DEFAULT_OVERNIGHT_PRICE_LOW = 0.15  # $/kWh — full hold reward below this
 DEFAULT_OVERNIGHT_PRICE_HIGH = 0.25  # $/kWh — zero hold reward above this
+
+# Appliance monitoring (Phase 0 — data collection)
+DEFAULT_APPLIANCE_SENSORS = ["sensor.sp7_power", "sensor.sp8_power"]
+APPLIANCE_IDLE_W = 10
+APPLIANCE_STANDBY_W = 50
+APPLIANCE_RUNNING_W = 50  # Same as standby threshold for now

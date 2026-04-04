@@ -139,6 +139,36 @@ SENSOR_DESCRIPTIONS: tuple[VictronMPCSensorDescription, ...] = (
         if isinstance(data, dict)
         else {},
     ),
+    VictronMPCSensorDescription(
+        key="mpc_amber_forecast_accuracy",
+        attr_key="amber_forecast_accuracy",
+        translation_key="amber_forecast_accuracy",
+        icon="mdi:chart-line",
+        attributes_fn=lambda data: {
+            "bias_by_hour": data.get("bias_by_hour", {}),
+            "mae_by_horizon": data.get("mae_by_horizon", {}),
+            "bias_by_horizon": data.get("bias_by_horizon", {}),
+            "spike_accuracy": data.get("spike_accuracy", {}),
+            "matched_pairs": data.get("matched_pairs", 0),
+            "coverage_hours": data.get("coverage_hours", 0),
+            "last_updated": data.get("last_updated", ""),
+        }
+        if isinstance(data, dict)
+        else {},
+    ),
+    VictronMPCSensorDescription(
+        key="mpc_appliance_monitor",
+        attr_key="appliance_monitor",
+        translation_key="appliance_monitor",
+        icon="mdi:washing-machine",
+        attributes_fn=lambda data: {
+            "readings": data.get("readings", {}),
+            "log_entries": data.get("log_entries", 0),
+            "recent_history": data.get("recent_history", []),
+        }
+        if isinstance(data, dict)
+        else {},
+    ),
 )
 
 
