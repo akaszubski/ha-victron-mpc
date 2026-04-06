@@ -38,6 +38,7 @@ from .const import (
     REGISTER_BATTERYLIFE_STATE,
     REGISTER_ESS_MIN_SOC,
     REGISTER_FEEDIN_BLOCK,
+    REGISTER_FEEDIN_MAX,
     REGISTER_MAX_FEED_IN,
     UPDATE_INTERVAL_MINUTES,
 )
@@ -1071,11 +1072,11 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         if buy_price < 0:
             LOGGER.debug("R2706: Rule 1 — negative buy price, export everything")
-            return REGISTER_MAX_FEED_IN  # 70
+            return REGISTER_FEEDIN_MAX  # 70
 
         if mode == "grid_charge":
             LOGGER.debug("R2706: Rule 2 — grid_charge mode, allow import")
-            return REGISTER_MAX_FEED_IN  # 70
+            return REGISTER_FEEDIN_MAX  # 70
 
         tunables = getattr(self, "_tunables", None)
         fit_threshold = tunables.feedin_export_threshold if tunables else 0.10
@@ -1087,11 +1088,11 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 sell_price,
                 soc_pct,
             )
-            return REGISTER_MAX_FEED_IN  # 70
+            return REGISTER_FEEDIN_MAX  # 70
 
         if soc_pct > 95 and sell_price > 0:
             LOGGER.debug("R2706: Rule 4 — battery full + positive FIT, export excess")
-            return REGISTER_MAX_FEED_IN  # 70
+            return REGISTER_FEEDIN_MAX  # 70
 
         LOGGER.debug("R2706: Rule 5 — block export, self-consume")
         return REGISTER_FEEDIN_BLOCK  # 0
@@ -1770,11 +1771,18 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Write max grid feed-in register (R2706) via Modbus.
 
         Units = 100W per value (70 = 7000W, 0 = block all export).
+        Only two values are allowed: 0 (block) or 70 (full inverter capacity).
         """
         if value == self._last_feedin_value:
             return
 
-        value = max(REGISTER_FEEDIN_BLOCK, min(REGISTER_MAX_FEED_IN, value))
+        if value not in (REGISTER_FEEDIN_BLOCK, REGISTER_FEEDIN_MAX):
+            LOGGER.error(
+                "R2706 safety: value %d not in {%d, %d} — defaulting to %d",
+                value, REGISTER_FEEDIN_BLOCK, REGISTER_FEEDIN_MAX,
+                REGISTER_FEEDIN_BLOCK,
+            )
+            value = REGISTER_FEEDIN_BLOCK
 
         try:
             await self.hass.services.async_call(
