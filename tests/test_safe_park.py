@@ -25,7 +25,7 @@ from custom_components.victron_mpc.coordinator import VictronMPCCoordinator
 
 FALLBACK_AUTOMATIONS = [
     "automation.fallback_battery_management",
-    "automation.fallback_feedin_control",
+    "automation.fallback_feed_in_control",
 ]
 
 
@@ -184,7 +184,7 @@ class TestSafeParkFallbackAutomations:
         assert len(turn_on_calls) == 1
         entities = turn_on_calls[0][0][2]["entity_id"]
         assert "automation.fallback_battery_management" in entities
-        assert "automation.fallback_feedin_control" in entities
+        assert "automation.fallback_feed_in_control" in entities
 
     @pytest.mark.asyncio
     async def test_disables_fallback_automations_on_recovery(self):
@@ -204,7 +204,7 @@ class TestSafeParkFallbackAutomations:
         assert len(turn_off_calls) == 1
         entities = turn_off_calls[0][0][2]["entity_id"]
         assert "automation.fallback_battery_management" in entities
-        assert "automation.fallback_feedin_control" in entities
+        assert "automation.fallback_feed_in_control" in entities
 
     @pytest.mark.asyncio
     async def test_recovery_sends_notification(self):

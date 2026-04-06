@@ -612,7 +612,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         "automation", "turn_off",
                         {"entity_id": [
                             "automation.fallback_battery_management",
-                            "automation.fallback_feedin_control",
+                            "automation.fallback_feed_in_control",
                         ]},
                     )
                 except Exception:
@@ -848,7 +848,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         "automation", "turn_on",
                         {"entity_id": [
                             "automation.fallback_battery_management",
-                            "automation.fallback_feedin_control",
+                            "automation.fallback_feed_in_control",
                         ]},
                     )
                 except Exception:
