@@ -40,6 +40,8 @@ from .const import (
     REGISTER_FEEDIN_BLOCK,
     REGISTER_FEEDIN_MAX,
     REGISTER_MAX_FEED_IN,
+    REGISTER_SAFE_PARK,
+    SAFE_PARK_CONSECUTIVE_FAILURES,
     UPDATE_INTERVAL_MINUTES,
 )
 from .forecast_accuracy import compute_forecast_accuracy
@@ -199,6 +201,9 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Emergency stop — one-button MPC disable (Issue #54)
         self._emergency_stopped: bool = False
+
+        # Safe-park — auto-recoverable register parking on consecutive failures (#71)
+        self._safe_parked: bool = False
 
         # Audit log — every register write with full decision context (#56)
         self._audit_log: list[dict[str, Any]] = []
@@ -597,6 +602,29 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._last_full_charge_check = datetime.now()
 
             self._consecutive_failures = 0
+            if self._safe_parked:
+                LOGGER.info(
+                    "SAFE-PARK recovered — disabling fallback automations"
+                )
+                self._safe_parked = False
+                try:
+                    await self.hass.services.async_call(
+                        "automation", "turn_off",
+                        {"entity_id": [
+                            "automation.fallback_battery_management",
+                            "automation.fallback_feedin_control",
+                        ]},
+                    )
+                except Exception:
+                    LOGGER.exception(
+                        "Safe-park recovery: failed to disable fallback automations"
+                    )
+                await self._notify(
+                    "MPC: Recovered",
+                    "MPC optimizer recovered. Fallback automations deactivated. "
+                    "MPC is back in control.",
+                    notification_id="mpc_safe_park",
+                )
 
             # ----------------------------------------------------------
             # Phase 7b: Reality check — verify grid matches intent
@@ -781,6 +809,62 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         except Exception as err:
             self._consecutive_failures += 1
+
+            # Safe-park: after N consecutive failures, write safe registers
+            # and notify. This is auto-recoverable — next successful cycle
+            # clears the flag. Does NOT set _emergency_stopped.
+            if (
+                self._consecutive_failures >= SAFE_PARK_CONSECUTIVE_FAILURES
+                and not self._safe_parked
+            ):
+                self._safe_parked = True
+                LOGGER.warning(
+                    "SAFE-PARK: %d consecutive failures — activating "
+                    "fallback automations",
+                    self._consecutive_failures,
+                )
+                shadow_mode = self.entry.options.get("shadow_mode", True)
+                if not shadow_mode:
+                    # Write immediate safe registers
+                    try:
+                        self._last_register_value = None
+                        await self._write_register(REGISTER_SAFE_PARK)
+                    except Exception:
+                        LOGGER.exception(
+                            "Safe-park: failed to write R2901=%d",
+                            REGISTER_SAFE_PARK,
+                        )
+                    try:
+                        self._last_feedin_value = None
+                        await self._write_feedin_register(REGISTER_FEEDIN_BLOCK)
+                    except Exception:
+                        LOGGER.exception(
+                            "Safe-park: failed to write R2706=%d",
+                            REGISTER_FEEDIN_BLOCK,
+                        )
+                # Enable fallback rate-based automations
+                try:
+                    await self.hass.services.async_call(
+                        "automation", "turn_on",
+                        {"entity_id": [
+                            "automation.fallback_battery_management",
+                            "automation.fallback_feedin_control",
+                        ]},
+                    )
+                except Exception:
+                    LOGGER.exception(
+                        "Safe-park: failed to enable fallback automations"
+                    )
+                await self._notify(
+                    "MPC: Fallback Mode Active",
+                    f"MPC optimizer failed {self._consecutive_failures} "
+                    f"consecutive cycles (~{self._consecutive_failures * UPDATE_INTERVAL_MINUTES} min). "
+                    "Fallback rate-based automations are now active "
+                    "(charge when cheap, ride out spikes). "
+                    "Will auto-recover on next successful cycle.",
+                    notification_id="mpc_safe_park",
+                )
+
             raise UpdateFailed(
                 f"MPC cycle {self._cycle_count} failed "
                 f"({self._consecutive_failures} consecutive): {err}"
@@ -1649,6 +1733,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "spike_active": is_spike,
             "modbus_healthy": self.modbus_healthy,
             "modbus_failures": self._modbus_consecutive_failures,
+            "safe_parked": self._safe_parked,
             "amber_forecast_log_entries": len(self._amber_forecast_log),
             "genai_health": {
                 **self._last_genai_result,

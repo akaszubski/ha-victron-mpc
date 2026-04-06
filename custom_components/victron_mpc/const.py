@@ -88,3 +88,7 @@ DEFAULT_APPLIANCE_SENSORS = ["sensor.sp7_power", "sensor.sp8_power"]
 APPLIANCE_IDLE_W = 10
 APPLIANCE_STANDBY_W = 50
 APPLIANCE_RUNNING_W = 50  # Same as standby threshold for now
+
+# Safe-park defaults (Issue #71)
+REGISTER_SAFE_PARK = 300  # 30% SoC floor — safe default when parking
+SAFE_PARK_CONSECUTIVE_FAILURES = 3  # 3 × 5 min = 15 min before auto-park
