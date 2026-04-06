@@ -534,15 +534,96 @@ class TestSolarForecastPriority:
             "weather", "get_forecasts", mock_service,
             supports_response=SupportsResponse.OPTIONAL,
         )
-        hass.states.async_set("sensor.solar_power", "500")
+        hass.states.async_set("sensor.solar_power", "0")
 
         fb = _builder(hass, tunables, vrm=mock_vrm, open_meteo=mock_open_meteo)
-        await fb._build_solar_forecast(now, 500.0)
+        await fb._build_solar_forecast(now, 0.0)
 
         # Verify get_clearsky_envelope was called with P40 for overcast
         call_args = mock_vrm.get_clearsky_envelope.call_args
         assert call_args is not None
         assert call_args.kwargs.get("percentile", call_args.args[0] if call_args.args else None) == pytest.approx(0.40)
+
+
+class TestWeatherConfidenceDiscount:
+    """Weather confidence discount reduces solar forecast on bad weather days."""
+
+    async def test_rain_day_discounts_solar(
+        self,
+        hass: HomeAssistant,
+        mock_vrm: MagicMock,
+        mock_open_meteo: MagicMock,
+    ):
+        """Rain day type applies 50% confidence discount to solar forecast."""
+        now = datetime.now()
+        month = now.month
+        hourly_profile = [0.0] * 6 + [1.0, 2.0, 3.0, 4.0, 5.0, 5.5, 5.0, 4.0, 3.0, 2.0, 1.0, 0.5] + [0.0] * 6
+
+        mock_vrm.get_clearsky_envelope = AsyncMock(
+            return_value={month: hourly_profile}
+        )
+        mock_vrm.get_monthly_peak_kwh = AsyncMock(return_value=None)
+
+        # Heavy rain forecast (>2mm precip)
+        forecasts = _make_hourly_forecasts(
+            [90] * 12, precip_mms=[0.5] * 12,
+        )
+
+        async def mock_service(call):
+            return {"weather.home": {"forecast": forecasts}}
+
+        hass.services.async_register(
+            "weather", "get_forecasts", mock_service,
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+        hass.states.async_set("sensor.solar_power", "0")
+
+        tunables = MPCTunables()
+        fb = _builder(hass, tunables, vrm=mock_vrm, open_meteo=mock_open_meteo)
+        solar_kw, source, day_type = await fb._build_solar_forecast(now, 0.0)
+
+        assert day_type == "rain"
+        # Rain discount = 0.5, so peak should be roughly half of envelope peak
+        peak = max(solar_kw) if solar_kw else 0
+        # Envelope peak is 5.5kW, after rain discount should be ~2.75kW
+        assert peak < 3.5  # Well below undiscounted peak
+
+    async def test_clear_day_no_discount(
+        self,
+        hass: HomeAssistant,
+        mock_vrm: MagicMock,
+        mock_open_meteo: MagicMock,
+    ):
+        """Clear day type applies no discount (confidence = 1.0)."""
+        now = datetime.now()
+        month = now.month
+        hourly_profile = [0.0] * 6 + [1.0, 2.0, 3.0, 4.0, 5.0, 5.5, 5.0, 4.0, 3.0, 2.0, 1.0, 0.5] + [0.0] * 6
+
+        mock_vrm.get_clearsky_envelope = AsyncMock(
+            return_value={month: hourly_profile}
+        )
+        mock_vrm.get_monthly_peak_kwh = AsyncMock(return_value=None)
+
+        # Clear forecast (<30% cloud, no precip)
+        forecasts = _make_hourly_forecasts([20] * 12)
+
+        async def mock_service(call):
+            return {"weather.home": {"forecast": forecasts}}
+
+        hass.services.async_register(
+            "weather", "get_forecasts", mock_service,
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+        hass.states.async_set("sensor.solar_power", "0")
+
+        tunables = MPCTunables()
+        fb = _builder(hass, tunables, vrm=mock_vrm, open_meteo=mock_open_meteo)
+        solar_kw, source, day_type = await fb._build_solar_forecast(now, 0.0)
+
+        assert day_type == "clear"
+        # No discount — peak should be close to envelope peak (5.5kW)
+        peak = max(solar_kw) if solar_kw else 0
+        assert peak > 4.0
 
 
 # ===================================================================
@@ -1784,3 +1865,95 @@ class TestCloudLayerOverride:
 
         result = fb._maybe_adjust_day_type(now, "clear")
         assert result == "clear"  # Cirrus doesn't block solar
+
+
+# ===================================================================
+# 14. VRM API Auth Header Regression
+# ===================================================================
+
+
+class TestVRMAuthHeader:
+    """Verify VRM client uses Token prefix, not Bearer."""
+
+    def test_vrm_header_uses_token_prefix(self):
+        """VRM API requires 'Token' prefix, not 'Bearer'."""
+        from custom_components.victron_mpc.api.vrm import VRMClient
+
+        session = MagicMock()
+        client = VRMClient(
+            session=session,
+            access_token="my_secret_token",
+            installation_id="12345",
+        )
+        assert "X-Authorization" in client._headers
+        assert client._headers["X-Authorization"] == "Token my_secret_token"
+        assert not client._headers["X-Authorization"].startswith("Bearer")
+
+
+# ===================================================================
+# 15. Tomorrow Forecast Stitching After Sunset
+# ===================================================================
+
+
+class TestTomorrowStitching:
+    """After sunset, Solcast stitches tomorrow's forecast for 24h horizon."""
+
+    async def test_solcast_stitches_tomorrow_after_sunset(
+        self, hass: HomeAssistant, tunables: MPCTunables,
+    ):
+        """When now.hour >= 19, today has near-zero solar; tomorrow should be stitched."""
+        # Simulate 7pm — after sunset, today's remaining forecast is zero
+        now = datetime(2026, 3, 18, 19, 0, tzinfo=timezone(timedelta(hours=11)))
+
+        # Today's forecast: only past periods with solar, remaining are zero
+        today_data = []
+        for i in range(48):
+            period_start = now.replace(hour=0, minute=0, second=0) + timedelta(minutes=30 * i)
+            hour = period_start.hour + period_start.minute / 60.0
+            # All past hours — some had solar, but relative to "now" (19:00)
+            # only 19:00+ remain, which are all dark
+            kw = 0.0 if hour >= 17 else 3.0
+            today_data.append({
+                "period_start": period_start.isoformat(),
+                "pv_estimate": round(kw, 3),
+            })
+
+        # Tomorrow's forecast: typical bell curve with solar
+        tomorrow_base = now.replace(hour=0, minute=0, second=0) + timedelta(days=1)
+        tomorrow_data = []
+        import math
+        for i in range(48):
+            period_start = tomorrow_base + timedelta(minutes=30 * i)
+            hour = period_start.hour + period_start.minute / 60.0
+            if 6 <= hour <= 18:
+                intensity = math.exp(-0.5 * ((hour - 12) / 3) ** 2)
+                kw = 5.0 * intensity
+            else:
+                kw = 0.0
+            tomorrow_data.append({
+                "period_start": period_start.isoformat(),
+                "pv_estimate": round(kw, 3),
+            })
+
+        hass.states.async_set(
+            "sensor.solcast_pv_forecast_forecast_today",
+            "25.5",
+            {"detailedForecast": today_data},
+        )
+        hass.states.async_set(
+            "sensor.solcast_pv_forecast_forecast_tomorrow",
+            "20.0",
+            {"detailedForecast": tomorrow_data},
+        )
+
+        fb = _builder(hass, tunables, entities=SOLCAST_ENTITIES)
+        result = fb._get_solcast_ha_forecast(now)
+
+        assert result is not None
+        assert len(result) == STEPS_24H
+        # After stitching, there should be non-zero values for tomorrow's daylight
+        # The result array maps from "now" onwards — tomorrow's 6am-18pm should have solar
+        # At 19:00 today, tomorrow 6am is 11 hours away = 132 steps
+        # Check that some steps around that range have solar > 0
+        nonzero = [kw for kw in result if kw > 0.01]
+        assert len(nonzero) > 10, "Tomorrow's solar should be stitched into forecast"

@@ -4,6 +4,9 @@ Verifies dataclass construction, serialization, config entry loading,
 and tunable bounds validation.
 """
 
+import json
+from pathlib import Path
+
 from custom_components.victron_mpc.config import (
     TUNABLE_BOUNDS,
     MPCTunables,
@@ -104,3 +107,61 @@ class TestTunableBounds:
         for key, (lo, hi) in TUNABLE_BOUNDS.items():
             val = getattr(t, key)
             assert lo <= val <= hi, f"{key}={val} outside [{lo}, {hi}]"
+
+
+class TestSensorTranslationKeys:
+    """Every sensor translation_key in sensor.py must exist in translations/en.json."""
+
+    def test_all_translation_keys_present_in_en_json(self):
+        """Read sensor.py translation_keys and verify each exists in en.json."""
+        from custom_components.victron_mpc.sensor import SENSOR_DESCRIPTIONS
+
+        translations_path = (
+            Path(__file__).parent.parent
+            / "custom_components"
+            / "victron_mpc"
+            / "translations"
+            / "en.json"
+        )
+        translations = json.loads(translations_path.read_text())
+        sensor_translations = translations.get("entity", {}).get("sensor", {})
+
+        for desc in SENSOR_DESCRIPTIONS:
+            key = desc.translation_key
+            assert key in sensor_translations, (
+                f"translation_key '{key}' from sensor.py "
+                f"missing in translations/en.json entity.sensor"
+            )
+
+
+class TestParameterizedSafetyThresholds:
+    """Custom safety thresholds override defaults in MPCTunables."""
+
+    def test_custom_spike_threshold(self):
+        t = MPCTunables(spike_threshold=2.50)
+        assert t.spike_threshold == 2.50
+
+    def test_custom_defensive_price(self):
+        t = MPCTunables(defensive_price=3.00)
+        assert t.defensive_price == 3.00
+
+    def test_custom_feedin_export_threshold(self):
+        t = MPCTunables(feedin_export_threshold=0.05)
+        assert t.feedin_export_threshold == 0.05
+
+    def test_custom_amber_blip_minutes(self):
+        t = MPCTunables(amber_blip_minutes=15.0)
+        assert t.amber_blip_minutes == 15.0
+
+    def test_multiple_custom_thresholds_override_defaults(self):
+        t = MPCTunables(
+            spike_threshold=1.50,
+            defensive_price=5.00,
+            feedin_export_threshold=0.20,
+            feedin_soc_threshold=50.0,
+        )
+        defaults = MPCTunables()
+        assert t.spike_threshold != defaults.spike_threshold
+        assert t.defensive_price != defaults.defensive_price
+        assert t.feedin_export_threshold != defaults.feedin_export_threshold
+        assert t.feedin_soc_threshold != defaults.feedin_soc_threshold

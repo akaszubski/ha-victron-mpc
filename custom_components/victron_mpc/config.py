@@ -1,7 +1,7 @@
 """Configuration for MPC Battery Optimizer.
 
-Pure dataclasses defining system specs, optimization tunables, and
-entity mappings. In the HACS integration, values come from the config
+Pure dataclasses defining system specs, optimization tunables, intents,
+and entity mappings. In the HACS integration, values come from the config
 entry (setup wizard + options flow) instead of environment variables.
 
 Ported from scripts/mpc/config.py with connection classes removed
@@ -12,6 +12,64 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from typing import Any
+
+
+# ======================================================================
+# System Intents — declarative goals the optimizer translates into
+# constraints and objectives (TM Forum IAADE "Intent" phase).
+# These are WHAT the system should achieve, not HOW.
+# ======================================================================
+
+SYSTEM_INTENTS: list[dict[str, str]] = [
+    {
+        "id": "cost_minimisation",
+        "description": "Minimise total electricity cost over the 24-hour horizon",
+        "implementation": "LP objective function (linprog cost vector)",
+        "measurable": "$/day actual vs grid-only baseline",
+    },
+    {
+        "id": "sunset_readiness",
+        "description": "Battery SoC >= 95% by sunset every day",
+        "implementation": "Hard LP constraint at sunset_step",
+        "measurable": "SoC at sunset (target: >= 95%)",
+    },
+    {
+        "id": "overnight_resilience",
+        "description": "Maintain SoC >= 30% from 22:00 to 06:00",
+        "implementation": "Hard LP constraint during overnight_steps",
+        "measurable": "Minimum overnight SoC (target: >= 30%)",
+    },
+    {
+        "id": "battery_health",
+        "description": "Minimise unnecessary cycling to preserve battery lifespan",
+        "implementation": "Wear cost ($0.02/kWh) in LP objective + 14-day cell balance",
+        "measurable": "Cycles/day, full charge interval",
+    },
+    {
+        "id": "self_sufficiency",
+        "description": "Prefer battery over grid when economically equivalent",
+        "implementation": "Grid import penalty ($0.02/kWh) in LP objective",
+        "measurable": "Grid import W during discharge (target: < 50W)",
+    },
+    {
+        "id": "spike_protection",
+        "description": "During price spikes, discharge battery to avoid grid purchase",
+        "implementation": "Override: spike → R2901=100 (discharge to 10%)",
+        "measurable": "Grid import during spikes (target: 0W)",
+    },
+    {
+        "id": "negative_price_capture",
+        "description": "During negative prices, charge battery (paid to consume)",
+        "implementation": "Override: negative price → R2901=1000 (charge to 100%)",
+        "measurable": "SoC increase during negative pricing",
+    },
+    {
+        "id": "forecast_confidence",
+        "description": "Discount solar forecast on bad weather days to avoid late charging",
+        "implementation": "Weather confidence discount (rain ×0.5, overcast ×0.7)",
+        "measurable": "Grid charge timing on rainy days",
+    },
+]
 
 
 @dataclass
@@ -114,6 +172,7 @@ class MPCTunables:
     defensive_price: float = 2.00  # $/kWh — assumed price when Amber down
     fallback_price: float = 0.30  # $/kWh — used when no price data at all
     amber_blip_minutes: float = 10.0  # Minutes before defensive mode
+    amber_cautious_minutes: float = 15.0  # Tier 2→3 escalation (was 30)
     feedin_export_threshold: float = 0.10  # $/kWh — min FIT for spike export
     feedin_soc_threshold: float = 30.0  # % — min SoC to allow spike export
     overnight_price_low: float = 0.15  # $/kWh — full hold reward below
@@ -162,6 +221,17 @@ class MPCTunables:
     solar_day_type_precip_light: float = 1.0
     solar_day_type_precip_heavy: float = 2.0
 
+    # Weather confidence discount — applied to solar forecast when conditions
+    # are poor.  Makes the sunset constraint tighter, forcing earlier grid
+    # charging on days when Solcast over-estimates (rain/overcast).
+    # 1.0 = no discount, 0.5 = halve the forecast.
+    solar_weather_confidence: dict[str, float] = field(default_factory=lambda: {
+        "clear": 1.0,
+        "partly_cloudy": 0.9,
+        "overcast": 0.7,
+        "rain": 0.5,
+    })
+
     # Seasonal load adjustment
     seasonal_load_adjustment: bool = True
 
@@ -183,6 +253,21 @@ class MPCTunables:
     hot_water_start_hour: float = 6.5  # 06:30 local
     hot_water_duration_minutes: float = 10.0  # Typical cycle duration
     hot_water_enabled: bool = False  # Disabled by default until configured
+
+    # Input validation bounds (Milestone 10 — Resilience)
+    # Amber price sanity — reject API errors / data corruption only.
+    # NEM prices can legitimately hit $17+/kWh (extreme spikes) and go
+    # deeply negative (paid to consume).  These bounds catch data
+    # corruption, not real market events.
+    price_max_buy: float = 50.0  # $/kWh — NEM cap is ~$17, 50 catches corruption
+    price_min_buy: float = -10.0  # $/kWh — deep negatives happen, -10 catches corruption
+    # SoC jump detection — physical limit ~4.2%/5min, 15% allows margin
+    soc_max_jump_pct: float = 15.0  # Max SoC change per 5-min cycle
+    # Solar forecast cap — array is 7kW, 8kW allows margin for overpanel
+    solar_forecast_cap_kw: float = 8.0  # Max per-timestep solar kW
+    # Load forecast bounds — max reasonable household + AC
+    load_forecast_cap_kw: float = 15.0  # Max per-timestep load kW
+    load_forecast_min_kw: float = 0.0  # Min per-timestep load kW (no negative)
 
     @property
     def horizon_steps(self) -> int:

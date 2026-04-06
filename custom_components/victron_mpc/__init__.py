@@ -18,12 +18,17 @@ Architecture:
 
 from __future__ import annotations
 
+import voluptuous as vol
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, ServiceCall
 
 from .const import DOMAIN as DOMAIN, LOGGER
 from .coordinator import VictronMPCCoordinator
+
+SERVICE_EMERGENCY_STOP = "emergency_stop"
+SERVICE_EMERGENCY_RESUME = "emergency_resume"
 
 PLATFORMS: list[Platform] = [
     Platform.SENSOR,
@@ -55,6 +60,9 @@ async def async_setup_entry(
     # Reload on options change (tunables adjusted from UI)
     entry.async_on_unload(entry.add_update_listener(_async_update_options))
 
+    # Register services (emergency stop/resume)
+    _register_services(hass, coordinator)
+
     LOGGER.info(
         "Victron MPC initialized — %s mode, %d-min cycle",
         "shadow" if entry.options.get("shadow_mode", True) else "active",
@@ -69,7 +77,39 @@ async def async_unload_entry(
     entry: VictronMPCConfigEntry,
 ) -> bool:
     """Unload Victron MPC config entry."""
+    # Remove services when the last entry is unloaded
+    hass.services.async_remove(DOMAIN, SERVICE_EMERGENCY_STOP)
+    hass.services.async_remove(DOMAIN, SERVICE_EMERGENCY_RESUME)
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+def _register_services(
+    hass: HomeAssistant, coordinator: VictronMPCCoordinator,
+) -> None:
+    """Register emergency stop/resume services.
+
+    These allow one-button MPC disable via HA service call, developer
+    tools, or automation. The services write safe register values and
+    pause/resume the optimization loop.
+    """
+
+    async def _handle_emergency_stop(call: ServiceCall) -> None:
+        """Handle emergency_stop service call."""
+        await coordinator.async_emergency_stop()
+
+    async def _handle_emergency_resume(call: ServiceCall) -> None:
+        """Handle emergency_resume service call."""
+        await coordinator.async_emergency_resume()
+
+    if not hass.services.has_service(DOMAIN, SERVICE_EMERGENCY_STOP):
+        hass.services.async_register(
+            DOMAIN, SERVICE_EMERGENCY_STOP, _handle_emergency_stop, schema=vol.Schema({}),
+        )
+    if not hass.services.has_service(DOMAIN, SERVICE_EMERGENCY_RESUME):
+        hass.services.async_register(
+            DOMAIN, SERVICE_EMERGENCY_RESUME, _handle_emergency_resume, schema=vol.Schema({}),
+        )
+    LOGGER.info("Registered services: %s.%s, %s.%s", DOMAIN, SERVICE_EMERGENCY_STOP, DOMAIN, SERVICE_EMERGENCY_RESUME)
 
 
 async def _async_update_options(

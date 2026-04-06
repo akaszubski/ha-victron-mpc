@@ -15,6 +15,7 @@ The coordinator manages:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from datetime import datetime, timedelta
@@ -52,7 +53,7 @@ from .optimizer import OptInput, OptOutput, compute_sunset_target, optimize
 from .utils import scale_overnight_hold_reward
 
 # Amber three-tier escalation thresholds
-_AMBER_CAUTIOUS_MINUTES = 30.0
+_AMBER_CAUTIOUS_MINUTES = 15.0  # Default; overridden by tunables.amber_cautious_minutes
 _AMBER_CAUTIOUS_PRICE = 0.50
 
 
@@ -149,6 +150,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._consecutive_failures = 0
         self._last_register_value: int | None = None
         self._last_feedin_value: int | None = None
+        self._last_mode: str | None = None
         self._last_full_charge_check: datetime | None = None
         self._force_full_charge: bool = False
 
@@ -170,6 +172,9 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._modbus_last_success: datetime | None = None
         self._modbus_alerted: bool = False
 
+        # SoC jump detection — track previous cycle's SoC
+        self._last_soc_pct: float | None = None
+
         # Amber defensive discharge state
         self._amber_unavailable_since: datetime | None = None
         self._last_known_buy_price: float = 0.30  # Updated from tunables each cycle
@@ -190,6 +195,13 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Appliance monitoring (Phase 0 — data collection)
         self._appliance_log: list[dict[str, Any]] = []
         self._appliance_log_max = 2016
+
+        # Emergency stop — one-button MPC disable (Issue #54)
+        self._emergency_stopped: bool = False
+
+        # Audit log — every register write with full decision context (#56)
+        self._audit_log: list[dict[str, Any]] = []
+        self._audit_log_max = 2016  # 7 days × 288 cycles/day
 
     async def _async_setup(self) -> None:
         """One-time setup called during first refresh (HA 2024.8+).
@@ -262,6 +274,14 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         self._cycle_count += 1
 
+        # Emergency stop — skip all optimization while active
+        if self._emergency_stopped:
+            LOGGER.warning(
+                "EMERGENCY STOP active — skipping optimization cycle %d",
+                self._cycle_count,
+            )
+            return self.data or {"mode": "emergency_stop", "emergency_stopped": True}
+
         try:
             # ----------------------------------------------------------
             # Phase 1: Build tunables and system config from entry
@@ -296,6 +316,19 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             now = datetime.now()
             cap = system.battery_capacity_kwh
             soc_pct: float = forecasts["battery_soc_pct"]
+
+            # SoC jump detection — reject physically impossible changes
+            if self._last_soc_pct is not None:
+                soc_delta = abs(soc_pct - self._last_soc_pct)
+                if soc_delta > tunables.soc_max_jump_pct:
+                    LOGGER.warning(
+                        "SoC jump rejected: %.1f%% -> %.1f%% "
+                        "(delta=%.1f%%, max=%.1f%%) — using previous value",
+                        self._last_soc_pct, soc_pct,
+                        soc_delta, tunables.soc_max_jump_pct,
+                    )
+                    soc_pct = self._last_soc_pct
+            self._last_soc_pct = soc_pct
 
             # ----------------------------------------------------------
             # Phase 3: Build optimizer input
@@ -428,6 +461,31 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if amber_available:
                 buy_price_now = forecasts["buy_price"][0]
 
+            # Price data quality: warn on extreme (but real) values,
+            # only clamp on truly impossible values (API corruption).
+            # NEM prices can legitimately be $17+ or deeply negative.
+            if buy_price_now > tunables.price_max_buy:
+                LOGGER.warning(
+                    "PRICE DATA: $%.2f exceeds sanity bound ($%.2f) "
+                    "— likely API corruption, clamping",
+                    buy_price_now, tunables.price_max_buy,
+                )
+                buy_price_now = tunables.price_max_buy
+            elif buy_price_now < tunables.price_min_buy:
+                LOGGER.warning(
+                    "PRICE DATA: $%.2f below sanity bound ($%.2f) "
+                    "— likely API corruption, clamping",
+                    buy_price_now, tunables.price_min_buy,
+                )
+                buy_price_now = tunables.price_min_buy
+            elif buy_price_now > 5.0 or buy_price_now < -1.0:
+                # Unusual but real — log for awareness, don't clamp
+                LOGGER.info(
+                    "Extreme price: $%.2f/kWh — real market event, "
+                    "override logic will handle",
+                    buy_price_now,
+                )
+
             sell_price_now = forecasts["sell_price"][0]
             is_spike = self._is_spike_active()
             override_reason: str | None = None
@@ -479,6 +537,27 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             shadow_mode = self.entry.options.get("shadow_mode", True)
             if not shadow_mode:
                 await self._write_batterylife_register()
+
+                # Transition safety: when leaving grid_charge, the old
+                # high register value may still be active on the Cerbo
+                # (propagation lag).  Write the hard floor first to stop
+                # any unintended grid import, then write the real target.
+                leaving_grid_charge = (
+                    self._last_mode == "grid_charge"
+                    and mode != "grid_charge"
+                )
+                if leaving_grid_charge:
+                    floor_register = int(
+                        max(tunables.soc_floor_pct, system.soc_min_pct) * 10
+                    )
+                    LOGGER.info(
+                        "TRANSITION SAFETY: grid_charge → %s, "
+                        "writing floor %d before target %d",
+                        mode, floor_register, target_register,
+                    )
+                    await self._write_register(floor_register)
+                    await asyncio.sleep(2)
+
                 await self._write_register(target_register)
                 await self._write_feedin_register(feedin_value)
             else:
@@ -487,6 +566,30 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     target_register,
                     feedin_value,
                 )
+
+            self._last_mode = mode
+
+            # ----------------------------------------------------------
+            # Phase 7a: Audit log — persist every decision (#56)
+            # ----------------------------------------------------------
+            self._audit_log.append({
+                "cycle": self._cycle_count,
+                "timestamp": datetime.now().isoformat(),
+                "mode": mode,
+                "register": target_register,
+                "feedin": feedin_value,
+                "soc_pct": round(soc_pct, 1),
+                "buy_price": round(buy_price_now, 4),
+                "sell_price": round(sell_price_now, 4),
+                "solar_w": round(forecasts.get("current_solar_w", 0)),
+                "load_w": round(forecasts.get("current_load_w", 0)),
+                "cost_24h": round(result.total_cost, 4),
+                "reason": override_reason or result.reason,
+                "shadow": shadow_mode,
+                "spike": is_spike,
+            })
+            if len(self._audit_log) > self._audit_log_max:
+                self._audit_log = self._audit_log[-self._audit_log_max:]
 
             # Record full charge if SoC near 100%
             if soc_pct >= 95:
@@ -766,7 +869,12 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # Tier 1: Brief blip — use last known price
                 return (False, self._last_known_buy_price)
 
-            if minutes_down < _AMBER_CAUTIOUS_MINUTES:
+            cautious_minutes = (
+                blip_min.amber_cautious_minutes
+                if blip_min and hasattr(blip_min, "amber_cautious_minutes")
+                else _AMBER_CAUTIOUS_MINUTES
+            )
+            if minutes_down < cautious_minutes:
                 # Tier 2: Moderate outage — cautious but not panic
                 cautious_price = max(self._last_known_buy_price, _AMBER_CAUTIOUS_PRICE)
                 return (False, cautious_price)
@@ -987,6 +1095,60 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         LOGGER.debug("R2706: Rule 5 — block export, self-consume")
         return REGISTER_FEEDIN_BLOCK  # 0
+
+    # ------------------------------------------------------------------
+    # Emergency stop (Issue #54)
+    # ------------------------------------------------------------------
+
+    async def async_emergency_stop(self) -> None:
+        """Activate emergency stop — safe registers + skip future cycles.
+
+        Sets R2901 to hard floor (300 = 30%), R2706 to 0 (block export),
+        and prevents all future optimization cycles until resumed.
+        """
+        LOGGER.warning("EMERGENCY STOP activated — writing safe registers")
+        self._emergency_stopped = True
+
+        # Write safe registers immediately
+        shadow_mode = self.entry.options.get("shadow_mode", True)
+        if not shadow_mode:
+            try:
+                # R2901 = 300 (30% hard floor)
+                self._last_register_value = None  # Force write
+                await self._write_register(300)
+            except Exception:
+                LOGGER.exception("Emergency stop: failed to write R2901=300")
+            try:
+                # R2706 = 0 (block all export)
+                self._last_feedin_value = None  # Force write
+                await self._write_feedin_register(REGISTER_FEEDIN_BLOCK)
+            except Exception:
+                LOGGER.exception("Emergency stop: failed to write R2706=0")
+
+        await self._notify(
+            "MPC: EMERGENCY STOP",
+            "MPC optimizer has been stopped. Registers set to safe defaults "
+            "(R2901=300, R2706=0). All optimization cycles are paused. "
+            "Call victron_mpc_battery_optimizer.emergency_resume to restart.",
+            notification_id="mpc_emergency_stop",
+        )
+        LOGGER.warning("EMERGENCY STOP complete — optimization paused")
+
+    async def async_emergency_resume(self) -> None:
+        """Clear emergency stop — resume normal optimization cycles."""
+        if not self._emergency_stopped:
+            LOGGER.info("Emergency resume called but emergency stop is not active")
+            return
+
+        LOGGER.warning("EMERGENCY STOP cleared — resuming optimization")
+        self._emergency_stopped = False
+
+        await self._notify(
+            "MPC: Emergency Stop Cleared",
+            "MPC optimizer resumed. Normal optimization cycles will begin "
+            "on the next 5-minute interval.",
+            notification_id="mpc_emergency_stop",
+        )
 
     # ------------------------------------------------------------------
     # Modbus health
@@ -1395,6 +1557,9 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 **soc_lookahead,
             },
             # decision — full context for dashboards/automations
+            # Enriched with LP explainability (#59): exposes WHY the LP
+            # chose this mode, what the key cost drivers are, and how
+            # confident the forecasts are.
             "decision": {
                 "state": mode,
                 "reason": reason,
@@ -1421,6 +1586,18 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "genset_active": self._is_genset_active(),
                 "input_source": "genset" if self._is_genset_active() else "grid",
                 "schedule_30min": json.dumps(schedule_30min[:48]),
+                # LP explainability (#59) — expose reasoning
+                "solve_time_ms": round(result.solve_time_ms),
+                "solver_status": result.solver_status,
+                "cost_grid": round(breakdown.get("grid_cost", 0), 4),
+                "cost_wear": round(breakdown.get("wear_cost", 0), 4),
+                "revenue_export": round(breakdown.get("export_revenue", 0), 4),
+                "charge_next_kw": round(result.charge_schedule_kw[0], 2) if result.charge_schedule_kw else 0,
+                "discharge_next_kw": round(result.discharge_schedule_kw[0], 2) if result.discharge_schedule_kw else 0,
+                "grid_import_next_kw": round(result.grid_import_schedule_kw[0], 2) if result.grid_import_schedule_kw else 0,
+                "solar_used_next_kw": round(result.solar_used_schedule_kw[0], 2) if result.solar_used_schedule_kw else 0,
+                "solar_forecast_kwh_today": solar_forecast_kwh,
+                "weather_confidence": forecasts.get("weather_confidence", 1.0),
                 **soc_lookahead,
             },
             # Scalar sensors
@@ -1498,6 +1675,11 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     else []
                 ),
             },
+            # Audit log — last 50 register writes with context (#56)
+            "audit_log": {
+                "state": len(self._audit_log),
+                "entries": self._audit_log[-50:],
+            },
         }
 
     # ------------------------------------------------------------------
@@ -1505,34 +1687,84 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # ------------------------------------------------------------------
 
     async def _write_register(self, value: int) -> None:
-        """Write ESS min SoC register (R2901) via Modbus.
+        """Write ESS min SoC register (R2901) via Modbus with read-back verification.
 
         Value = SoC% x 10, range 100-1000.
         Acts as floor AND target: ESS discharges down to this value.
+
+        After writing, waits briefly and reads back the register via the HA
+        sensor.  If the readback doesn't match (within tolerance), retries
+        once.  A persistent mismatch is logged as a warning — something
+        else (BatteryLife, another automation) may be overwriting the register.
         """
         # Don't re-write if unchanged
         if value == self._last_register_value:
             return
 
         value = max(100, min(1000, value))  # Clamp to valid range
+        previous = self._last_register_value
 
-        try:
-            await self.hass.services.async_call(
-                "modbus",
-                "write_register",
-                {
-                    "hub": self.entry.data.get("modbus_hub", "cerbo"),
-                    "unit": self.entry.data.get("modbus_slave_system", 100),
-                    "address": REGISTER_ESS_MIN_SOC,
-                    "value": value,
-                },
-            )
-            LOGGER.info("R2901 written: %d (was %s)", value, self._last_register_value)
-            self._last_register_value = value
-            await self._modbus_write_success()
-        except Exception:
-            LOGGER.exception("Failed to write R2901=%d", value)
-            await self._modbus_write_failure()
+        for attempt in range(2):  # write + 1 retry
+            try:
+                await self.hass.services.async_call(
+                    "modbus",
+                    "write_register",
+                    {
+                        "hub": self.entry.data.get("modbus_hub", "cerbo"),
+                        "unit": self.entry.data.get("modbus_slave_system", 100),
+                        "address": REGISTER_ESS_MIN_SOC,
+                        "value": value,
+                    },
+                )
+            except Exception:
+                LOGGER.exception("Failed to write R2901=%d", value)
+                await self._modbus_write_failure()
+                return
+
+            # Read-back verification: wait for Modbus sensor to update,
+            # then compare.  The HA Modbus integration polls on its own
+            # schedule so the sensor may still show the old value.
+            await asyncio.sleep(2)
+            readback = self._get_r2901_readback()
+
+            if readback < 0:
+                # Sensor unavailable — can't verify, accept the write
+                LOGGER.info(
+                    "R2901 written: %d (was %s), readback unavailable",
+                    value, previous,
+                )
+                break
+
+            # Tolerance: register is SoC% × 10, sensor is SoC%.
+            # Accept if within 1% (10 register units).
+            expected_pct = value / 10.0
+            if abs(readback - expected_pct) <= 1.0:
+                LOGGER.info(
+                    "R2901 written: %d (was %s), readback %.1f%% — verified",
+                    value, previous, readback,
+                )
+                break
+
+            if attempt == 0:
+                LOGGER.warning(
+                    "R2901 READBACK MISMATCH: wrote %d (%.1f%%) but read "
+                    "%.1f%%. Retrying in 2s.",
+                    value, value / 10.0, readback,
+                )
+            else:
+                LOGGER.warning(
+                    "R2901 READBACK MISMATCH PERSISTENT: wrote %d (%.1f%%) "
+                    "but read %.1f%% after retry. Possible BatteryLife "
+                    "override or Modbus contention.",
+                    value, value / 10.0, readback,
+                )
+        else:
+            # Both attempts had mismatches — still update our tracking
+            # so we don't skip the next write.
+            pass
+
+        self._last_register_value = value
+        await self._modbus_write_success()
 
     async def _write_feedin_register(self, value: int) -> None:
         """Write max grid feed-in register (R2706) via Modbus.

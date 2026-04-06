@@ -2,9 +2,9 @@
 
 When the Amber price entity goes unavailable, the coordinator should:
 - Use the last known price for brief blips (<10 min, configurable)
-- Use cautious price ($0.50 or last_known, whichever higher) for 10-30 min
-- ALWAYS assume spike risk after 30 min → $2.00 (any time of day)
-  At $20/kWh, even 30 min on grid = $10 loss. Battery wear from
+- Use cautious price ($0.50 or last_known, whichever higher) for 10-15 min
+- ALWAYS assume spike risk after 15 min → $2.00 (any time of day)
+  At $20/kWh, even 15 min on grid = $5 loss. Battery wear from
   defensive discharge = $0.05/kWh = negligible. Asymmetric risk.
 - Alert via persistent_notification after blip threshold
 - Clear state when Amber recovers
@@ -70,7 +70,7 @@ async def test_amber_unavailable_brief_uses_last_known(hass):
 
 
 async def test_amber_unavailable_evening_peak_cautious(hass):
-    """When Amber unavailable 10-30 min during 17:00-21:00, return cautious $0.50."""
+    """When Amber unavailable 10-15 min during 17:00-21:00, return cautious $0.50."""
     coord = _make_coordinator(hass)
     hass.states.async_set("sensor.amber_general_price", "unavailable", {})
 
@@ -81,8 +81,8 @@ async def test_amber_unavailable_evening_peak_cautious(hass):
         fake_now = datetime(2026, 3, 19, 18, 30, 0)
         mock_dt.now.return_value = fake_now
         mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
-        # 15 min outage — Tier 2 cautious
-        coord._amber_unavailable_since = fake_now - timedelta(minutes=15)
+        # 12 min outage — Tier 2 cautious (between 10 and 15 min)
+        coord._amber_unavailable_since = fake_now - timedelta(minutes=12)
 
         available, price = coord._check_amber_health()
 
@@ -92,7 +92,7 @@ async def test_amber_unavailable_evening_peak_cautious(hass):
 
 
 async def test_amber_unavailable_off_peak_cautious(hass):
-    """When Amber unavailable 10-30 min at ANY time, return cautious $0.50.
+    """When Amber unavailable 10-15 min at ANY time, return cautious $0.50.
 
     Tier 2 — moderate outage. Not yet panicking but hedging.
     """
@@ -105,7 +105,7 @@ async def test_amber_unavailable_off_peak_cautious(hass):
         fake_now = datetime(2026, 3, 19, 10, 0, 0)  # 10am — off peak
         mock_dt.now.return_value = fake_now
         mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
-        coord._amber_unavailable_since = fake_now - timedelta(minutes=15)
+        coord._amber_unavailable_since = fake_now - timedelta(minutes=12)
 
         available, price = coord._check_amber_health()
 
@@ -156,7 +156,7 @@ async def test_amber_unavailable_alerts_after_blip(hass):
         fake_now = datetime(2026, 3, 19, 14, 0, 0)
         mock_dt.now.return_value = fake_now
         mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
-        coord._amber_unavailable_since = fake_now - timedelta(minutes=15)
+        coord._amber_unavailable_since = fake_now - timedelta(minutes=12)
 
         available, price = coord._check_amber_health()
 
@@ -225,7 +225,7 @@ async def test_amber_entity_missing_treated_as_unavailable(hass):
 
 
 async def test_amber_evening_peak_boundary_17(hass):
-    """17:00 exactly — 15 min outage returns Tier 2 cautious."""
+    """17:00 exactly — 12 min outage returns Tier 2 cautious."""
     coord = _make_coordinator(hass)
     hass.states.async_set("sensor.amber_general_price", "unavailable", {})
 
@@ -235,7 +235,7 @@ async def test_amber_evening_peak_boundary_17(hass):
         fake_now = datetime(2026, 3, 19, 17, 0, 0)
         mock_dt.now.return_value = fake_now
         mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
-        coord._amber_unavailable_since = fake_now - timedelta(minutes=15)
+        coord._amber_unavailable_since = fake_now - timedelta(minutes=12)
 
         available, price = coord._check_amber_health()
 
@@ -244,7 +244,7 @@ async def test_amber_evening_peak_boundary_17(hass):
 
 
 async def test_amber_cautious_at_3am(hass):
-    """At 3am, Amber down 15min returns Tier 2 cautious $0.50."""
+    """At 3am, Amber down 12min returns Tier 2 cautious $0.50."""
     coord = _make_coordinator(hass)
     hass.states.async_set("sensor.amber_general_price", "unavailable", {})
 
@@ -254,7 +254,7 @@ async def test_amber_cautious_at_3am(hass):
         fake_now = datetime(2026, 3, 19, 3, 0, 0)
         mock_dt.now.return_value = fake_now
         mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
-        coord._amber_unavailable_since = fake_now - timedelta(minutes=15)
+        coord._amber_unavailable_since = fake_now - timedelta(minutes=12)
 
         available, price = coord._check_amber_health()
 
@@ -268,7 +268,7 @@ async def test_amber_cautious_at_3am(hass):
 
 
 async def test_amber_moderate_outage_cautious_price(hass):
-    """Amber down 15min with low last-known -> returns $0.50 cautious."""
+    """Amber down 12min with low last-known -> returns $0.50 cautious."""
     coord = _make_coordinator(hass)
     coord._last_known_buy_price = 0.25
     hass.states.async_set("sensor.amber_general_price", "unavailable", {})
@@ -279,7 +279,7 @@ async def test_amber_moderate_outage_cautious_price(hass):
         fake_now = datetime(2026, 3, 19, 14, 0, 0)
         mock_dt.now.return_value = fake_now
         mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
-        coord._amber_unavailable_since = fake_now - timedelta(minutes=15)
+        coord._amber_unavailable_since = fake_now - timedelta(minutes=12)
 
         available, price = coord._check_amber_health()
 
@@ -289,7 +289,7 @@ async def test_amber_moderate_outage_cautious_price(hass):
 
 
 async def test_amber_moderate_outage_high_last_known(hass):
-    """Amber down 15min with high last-known -> returns last_known."""
+    """Amber down 12min with high last-known -> returns last_known."""
     coord = _make_coordinator(hass)
     coord._last_known_buy_price = 0.80
     hass.states.async_set("sensor.amber_general_price", "unavailable", {})
@@ -300,7 +300,7 @@ async def test_amber_moderate_outage_high_last_known(hass):
         fake_now = datetime(2026, 3, 19, 14, 0, 0)
         mock_dt.now.return_value = fake_now
         mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
-        coord._amber_unavailable_since = fake_now - timedelta(minutes=15)
+        coord._amber_unavailable_since = fake_now - timedelta(minutes=12)
 
         available, price = coord._check_amber_health()
 
@@ -327,6 +327,39 @@ async def test_amber_extended_outage_full_defensive(hass):
 
     assert available is False
     assert price == pytest.approx(2.00)
+
+
+async def test_amber_blip_threshold_floored_at_10_minutes(hass):
+    """Config amber_blip_minutes=5 should be floored to 10 minutes effective.
+
+    Regression: coordinator.py:859 applies max(blip_threshold, 10.0).
+    A 7-minute outage with config=5 should still use last-known (Tier 1),
+    not escalate to Tier 2 cautious.
+    """
+    coord = _make_coordinator(hass)
+    coord._last_known_buy_price = 0.30
+    # Set tunables with blip_minutes below the 10-min floor
+    coord._tunables = MagicMock()
+    coord._tunables.amber_blip_minutes = 5.0
+    coord._tunables.defensive_price = 2.00
+    coord._tunables.amber_cautious_minutes = 15.0
+
+    hass.states.async_set("sensor.amber_general_price", "unavailable", {})
+
+    with patch(
+        "custom_components.victron_mpc.coordinator.datetime"
+    ) as mock_dt:
+        fake_now = datetime(2026, 3, 19, 14, 0, 0)
+        mock_dt.now.return_value = fake_now
+        mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+        # 7 minutes outage — above config (5), below effective floor (10)
+        coord._amber_unavailable_since = fake_now - timedelta(minutes=7)
+
+        available, price = coord._check_amber_health()
+
+    assert available is False
+    # Should still be Tier 1 (last known), not Tier 2 ($0.50)
+    assert price == pytest.approx(0.30)
 
 
 async def test_amber_recovery_clears_all_state(hass):

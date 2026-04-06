@@ -57,6 +57,9 @@ UPDATE_INTERVAL_MINUTES = 5
 # Stale data threshold
 STALE_THRESHOLD_MINUTES = 10
 
+# Amber stale escalation — Tier 2 → Tier 3 boundary (minutes)
+DEFAULT_AMBER_CAUTIOUS_MINUTES = 15
+
 # Default system parameters (from working VictronSystem config)
 DEFAULT_BATTERY_CAPACITY_KWH = 14.2
 DEFAULT_MAX_CHARGE_KW = 3.5

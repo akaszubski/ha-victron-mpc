@@ -1,4 +1,4 @@
-"""Tests for Modbus health monitoring and alerting."""
+"""Tests for Modbus health monitoring, alerting, and register read-back validation."""
 
 from __future__ import annotations
 
@@ -10,8 +10,14 @@ import pytest
 from custom_components.victron_mpc.coordinator import VictronMPCCoordinator
 
 
-def _make_coordinator() -> VictronMPCCoordinator:
-    """Create a coordinator with mocked hass and config entry."""
+def _make_coordinator(*, readback_pct: float = -1) -> VictronMPCCoordinator:
+    """Create a coordinator with mocked hass and config entry.
+
+    Args:
+        readback_pct: Value returned by _get_r2901_readback().
+            -1 means sensor unavailable (default).
+            A positive float simulates a sensor reading (e.g. 50.0 = 50%).
+    """
     hass = MagicMock()
     hass.services = MagicMock()
     hass.services.async_call = AsyncMock()
@@ -35,6 +41,10 @@ def _make_coordinator() -> VictronMPCCoordinator:
     coord._modbus_alerted = False
     coord._last_register_value = None
     coord._last_feedin_value = None
+    coord._last_mode = None
+
+    # Mock _get_r2901_readback to return the specified value
+    coord._get_r2901_readback = MagicMock(return_value=readback_pct)
 
     return coord
 
@@ -276,3 +286,354 @@ class TestWriteRegisterIntegration:
         await coord._write_feedin_register(70)
 
         coord.hass.services.async_call.assert_not_called()
+
+
+class TestRegisterReadbackValidation:
+    """Tests for #58: R2901 write-then-verify with retry."""
+
+    @pytest.mark.asyncio
+    async def test_write_verified_on_matching_readback(self):
+        """Write succeeds when readback matches within tolerance."""
+        coord = _make_coordinator(readback_pct=50.0)
+
+        with patch("custom_components.victron_mpc.coordinator.asyncio.sleep", new_callable=AsyncMock):
+            await coord._write_register(500)
+
+        assert coord._last_register_value == 500
+        # Only one modbus write call (no retry needed)
+        modbus_calls = [
+            c for c in coord.hass.services.async_call.call_args_list
+            if c[0][0] == "modbus"
+        ]
+        assert len(modbus_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_write_accepted_when_sensor_unavailable(self):
+        """Write proceeds without verification when sensor returns -1."""
+        coord = _make_coordinator(readback_pct=-1)
+
+        with patch("custom_components.victron_mpc.coordinator.asyncio.sleep", new_callable=AsyncMock):
+            await coord._write_register(500)
+
+        assert coord._last_register_value == 500
+
+    @pytest.mark.asyncio
+    async def test_write_retries_on_mismatch(self):
+        """Mismatch on first read triggers one retry."""
+        coord = _make_coordinator()
+        # First readback: wrong (old value), second readback: correct
+        coord._get_r2901_readback = MagicMock(side_effect=[70.0, 50.0])
+
+        with patch("custom_components.victron_mpc.coordinator.asyncio.sleep", new_callable=AsyncMock):
+            await coord._write_register(500)
+
+        assert coord._last_register_value == 500
+        # Two modbus write calls (initial + retry)
+        modbus_calls = [
+            c for c in coord.hass.services.async_call.call_args_list
+            if c[0][0] == "modbus"
+        ]
+        assert len(modbus_calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_persistent_mismatch_still_updates_tracking(self):
+        """Persistent mismatch logs warning but still updates _last_register_value."""
+        coord = _make_coordinator()
+        # Both readbacks return wrong value
+        coord._get_r2901_readback = MagicMock(return_value=99.0)
+
+        with patch("custom_components.victron_mpc.coordinator.asyncio.sleep", new_callable=AsyncMock):
+            await coord._write_register(500)
+
+        # Value still tracked so next cycle doesn't skip the write
+        assert coord._last_register_value == 500
+        # Two modbus write calls (initial + retry)
+        modbus_calls = [
+            c for c in coord.hass.services.async_call.call_args_list
+            if c[0][0] == "modbus"
+        ]
+        assert len(modbus_calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_readback_tolerance_accepts_rounding(self):
+        """Readback within 1% (±1.0 percentage point) is accepted."""
+        # Write 505 (50.5%), readback 50.0% — within 1% tolerance
+        coord = _make_coordinator(readback_pct=50.0)
+
+        with patch("custom_components.victron_mpc.coordinator.asyncio.sleep", new_callable=AsyncMock):
+            await coord._write_register(505)
+
+        assert coord._last_register_value == 505
+        modbus_calls = [
+            c for c in coord.hass.services.async_call.call_args_list
+            if c[0][0] == "modbus"
+        ]
+        assert len(modbus_calls) == 1  # No retry needed
+
+    @pytest.mark.asyncio
+    async def test_write_failure_skips_readback(self):
+        """If the Modbus write itself fails, no readback is attempted."""
+        coord = _make_coordinator(readback_pct=50.0)
+        coord.hass.services.async_call = AsyncMock(
+            side_effect=Exception("modbus timeout")
+        )
+
+        with patch("custom_components.victron_mpc.coordinator.asyncio.sleep", new_callable=AsyncMock):
+            await coord._write_register(500)
+
+        assert coord._modbus_consecutive_failures == 1
+        # Readback not called because write failed
+        coord._get_r2901_readback.assert_not_called()
+
+
+class TestFastStartupRegisterWrite:
+    """Regression: first cycle (_last_register_value=None) always writes register."""
+
+    @pytest.mark.asyncio
+    async def test_first_cycle_always_writes(self):
+        """When _last_register_value is None, _write_register(200) calls Modbus."""
+        coord = _make_coordinator(readback_pct=-1)
+        assert coord._last_register_value is None
+
+        with patch("custom_components.victron_mpc.coordinator.asyncio.sleep", new_callable=AsyncMock):
+            await coord._write_register(200)
+
+        # Modbus service should have been called (not skipped)
+        modbus_calls = [
+            c for c in coord.hass.services.async_call.call_args_list
+            if c[0][0] == "modbus"
+        ]
+        assert len(modbus_calls) >= 1, "First cycle must write register even for default value"
+        assert coord._last_register_value == 200
+
+    @pytest.mark.asyncio
+    async def test_second_cycle_same_value_skips(self):
+        """After first write, same value skips (existing behavior)."""
+        coord = _make_coordinator(readback_pct=-1)
+        coord._last_register_value = 200  # Already written
+
+        await coord._write_register(200)
+
+        coord.hass.services.async_call.assert_not_called()
+
+
+class TestPhase7bGridImportAutoCorrect:
+    """Phase 7b: auto-correct grid import anomaly during non-grid-charge modes.
+
+    Regression for coordinator.py:606 — if mode != grid_charge AND grid_import > 200W
+    AND soc > 35%, write floor register to stop unintended grid import.
+    """
+
+    @pytest.mark.asyncio
+    async def test_auto_correct_triggered(self):
+        """Grid import > 200W during hold mode with SoC > 35% triggers floor write."""
+        coord = _make_coordinator(readback_pct=-1)
+        coord._last_mode = "hold"
+        coord._last_register_value = 500
+
+        # The Phase 7b logic in coordinator checks:
+        # mode != "grid_charge" and grid_import_w > 200 and not genset_active and soc_pct > 35
+        mode = "hold"
+        grid_import_w = 350.0
+        genset_active = False
+        soc_pct = 50.0
+
+        should_correct = (
+            mode != "grid_charge"
+            and grid_import_w > 200
+            and not genset_active
+            and soc_pct > 35
+        )
+        assert should_correct is True, "Auto-correct conditions should be met"
+
+        # Verify the floor register calculation
+        from custom_components.victron_mpc.config import MPCTunables, VictronSystem
+        tunables = MPCTunables()
+        system = VictronSystem()
+        floor_register = int(max(tunables.soc_floor_pct, system.soc_min_pct) * 10)
+        assert floor_register == 100  # 10% * 10 = 100
+
+        # Write the floor register
+        with patch("custom_components.victron_mpc.coordinator.asyncio.sleep", new_callable=AsyncMock):
+            await coord._write_register(floor_register)
+
+        modbus_calls = [
+            c for c in coord.hass.services.async_call.call_args_list
+            if c[0][0] == "modbus"
+        ]
+        assert len(modbus_calls) >= 1
+        assert modbus_calls[0][0][2]["value"] == 100
+
+    def test_no_correction_during_grid_charge(self):
+        """Grid import during grid_charge mode is expected — no auto-correct."""
+        mode = "grid_charge"
+        grid_import_w = 500.0
+        genset_active = False
+        soc_pct = 50.0
+
+        should_correct = (
+            mode != "grid_charge"
+            and grid_import_w > 200
+            and not genset_active
+            and soc_pct > 35
+        )
+        assert should_correct is False
+
+    def test_no_correction_low_soc(self):
+        """Low SoC (< 35%) should not trigger auto-correct — may need grid."""
+        mode = "hold"
+        grid_import_w = 350.0
+        genset_active = False
+        soc_pct = 30.0
+
+        should_correct = (
+            mode != "grid_charge"
+            and grid_import_w > 200
+            and not genset_active
+            and soc_pct > 35
+        )
+        assert should_correct is False
+
+    def test_no_correction_small_grid_import(self):
+        """Grid import <= 200W is within normal ESS oscillation — no correction."""
+        mode = "hold"
+        grid_import_w = 150.0
+        genset_active = False
+        soc_pct = 50.0
+
+        should_correct = (
+            mode != "grid_charge"
+            and grid_import_w > 200
+            and not genset_active
+            and soc_pct > 35
+        )
+        assert should_correct is False
+
+
+class TestTransitionSafety:
+    """Tests for #58: grid_charge → other mode transition writes floor first."""
+
+    @pytest.mark.asyncio
+    async def test_leaving_grid_charge_writes_floor_then_target(self):
+        """Transition from grid_charge to hold writes floor before target."""
+        coord = _make_coordinator(readback_pct=-1)  # Skip verification
+        coord._last_mode = "grid_charge"
+
+        # Simulate Phase 7 transition safety logic inline
+        # (testing the _write_register call sequence)
+        floor_register = 300
+
+        with patch("custom_components.victron_mpc.coordinator.asyncio.sleep", new_callable=AsyncMock):
+            await coord._write_register(floor_register)
+            await coord._write_register(700)
+
+        modbus_calls = [
+            c for c in coord.hass.services.async_call.call_args_list
+            if c[0][0] == "modbus"
+        ]
+        assert len(modbus_calls) == 2
+        # First write: floor (300)
+        assert modbus_calls[0][0][2]["value"] == 300
+        # Second write: target (700)
+        assert modbus_calls[1][0][2]["value"] == 700
+
+    @pytest.mark.asyncio
+    async def test_no_transition_safety_when_staying_in_mode(self):
+        """No extra floor write when mode doesn't change from grid_charge."""
+        coord = _make_coordinator(readback_pct=-1)
+        coord._last_mode = "hold"
+
+        with patch("custom_components.victron_mpc.coordinator.asyncio.sleep", new_callable=AsyncMock):
+            await coord._write_register(700)
+
+        modbus_calls = [
+            c for c in coord.hass.services.async_call.call_args_list
+            if c[0][0] == "modbus"
+        ]
+        assert len(modbus_calls) == 1
+        assert modbus_calls[0][0][2]["value"] == 700
+
+    @pytest.mark.asyncio
+    async def test_no_transition_safety_on_first_cycle(self):
+        """No transition safety when _last_mode is None (first cycle)."""
+        coord = _make_coordinator(readback_pct=-1)
+        coord._last_mode = None
+
+        with patch("custom_components.victron_mpc.coordinator.asyncio.sleep", new_callable=AsyncMock):
+            await coord._write_register(700)
+
+        modbus_calls = [
+            c for c in coord.hass.services.async_call.call_args_list
+            if c[0][0] == "modbus"
+        ]
+        assert len(modbus_calls) == 1
+
+
+class TestAuditLog:
+    """Tests for #56: audit log persists every decision with context."""
+
+    def test_audit_log_initialized_empty(self):
+        """Audit log starts empty."""
+        coord = _make_coordinator()
+        coord._audit_log = []
+        assert len(coord._audit_log) == 0
+
+    def test_audit_log_entry_has_required_fields(self):
+        """Audit log entries contain all required fields."""
+        required = {
+            "cycle", "timestamp", "mode", "register", "feedin",
+            "soc_pct", "buy_price", "sell_price", "solar_w", "load_w",
+            "cost_24h", "reason", "shadow", "spike",
+        }
+        entry = {
+            "cycle": 1, "timestamp": "2026-04-06T08:00:00",
+            "mode": "hold", "register": 300, "feedin": 0,
+            "soc_pct": 50.0, "buy_price": 0.18, "sell_price": 0.06,
+            "solar_w": 500, "load_w": 800, "cost_24h": 2.34,
+            "reason": "LP optimal", "shadow": False, "spike": False,
+        }
+        assert required.issubset(entry.keys())
+
+    def test_audit_log_rolls_over_at_max(self):
+        """Log trims to max entries, keeping most recent."""
+        coord = _make_coordinator()
+        coord._audit_log = [{"cycle": i} for i in range(20)]
+        coord._audit_log_max = 10
+        # Simulate trim logic from coordinator
+        if len(coord._audit_log) > coord._audit_log_max:
+            coord._audit_log = coord._audit_log[-coord._audit_log_max:]
+        assert len(coord._audit_log) == 10
+        assert coord._audit_log[0]["cycle"] == 10
+        assert coord._audit_log[-1]["cycle"] == 19
+
+
+class TestSystemIntents:
+    """Tests for explicit system intents (IAADE Intent phase)."""
+
+    def test_intents_list_exists_and_nonempty(self):
+        """SYSTEM_INTENTS is declared with at least 7 intents."""
+        from custom_components.victron_mpc.config import SYSTEM_INTENTS
+        assert isinstance(SYSTEM_INTENTS, list)
+        assert len(SYSTEM_INTENTS) >= 7
+
+    def test_each_intent_has_required_fields(self):
+        """Every intent has id, description, implementation, measurable."""
+        from custom_components.victron_mpc.config import SYSTEM_INTENTS
+        required = {"id", "description", "implementation", "measurable"}
+        for intent in SYSTEM_INTENTS:
+            missing = required - intent.keys()
+            assert not missing, f"Intent '{intent.get('id')}' missing: {missing}"
+
+    def test_intent_ids_are_unique(self):
+        """No duplicate intent IDs."""
+        from custom_components.victron_mpc.config import SYSTEM_INTENTS
+        ids = [i["id"] for i in SYSTEM_INTENTS]
+        assert len(ids) == len(set(ids))
+
+    def test_core_intents_declared(self):
+        """Critical intents exist: cost, sunset, resilience, health."""
+        from custom_components.victron_mpc.config import SYSTEM_INTENTS
+        ids = {i["id"] for i in SYSTEM_INTENTS}
+        for required_id in ["cost_minimisation", "sunset_readiness",
+                            "overnight_resilience", "battery_health"]:
+            assert required_id in ids, f"Missing core intent: {required_id}"

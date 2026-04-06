@@ -515,6 +515,9 @@ class ForecastBuilder:
             "solar_forecast_source": solar_source,
             "solar_shading_ratios": getattr(self, "_last_shading_ratios", []),
             "solar_day_type": day_type,
+            "weather_confidence": self._tunables.solar_weather_confidence.get(
+                day_type, 1.0
+            ),
             "load_forecast_source": load_source,
             "seasonal_load_factor": round(seasonal_factor, 3),
             "timestamp": now.isoformat(),
@@ -585,6 +588,25 @@ class ForecastBuilder:
         steps_per_interval = 6  # 30min / 5min
         buy_5min = _interpolate_stepwise(buy_30min, steps_per_interval, self.N)
         sell_5min = _interpolate_stepwise(sell_30min, steps_per_interval, self.N)
+
+        # Clamp buy prices to sanity bounds (input validation)
+        price_min = self._tunables.price_min_buy
+        price_max = self._tunables.price_max_buy
+        for i, p in enumerate(buy_5min):
+            if p > price_max:
+                _LOGGER.warning(
+                    "Buy price step %d clamped: $%.2f -> $%.2f "
+                    "(exceeds max sanity bound)",
+                    i, p, price_max,
+                )
+                buy_5min[i] = price_max
+            elif p < price_min:
+                _LOGGER.warning(
+                    "Buy price step %d clamped: $%.2f -> $%.2f "
+                    "(below min sanity bound)",
+                    i, p, price_min,
+                )
+                buy_5min[i] = price_min
 
         return buy_5min, sell_5min, buy_descriptors_5min
 
@@ -1313,6 +1335,31 @@ class ForecastBuilder:
                 )
                 solar_kw = [s * correction for s in solar_kw]
 
+        # Weather confidence discount: on rain/overcast days, Solcast
+        # over-estimates.  Discount the forecast so the sunset constraint
+        # forces earlier grid charging instead of waiting for solar that
+        # may not arrive.
+        confidence = self._tunables.solar_weather_confidence.get(day_type, 1.0)
+        if solar_kw and confidence < 1.0:
+            _LOGGER.info(
+                "Weather confidence discount: %.0f%% (%s day) — "
+                "solar forecast reduced for LP planning",
+                confidence * 100, day_type,
+            )
+            solar_kw = [s * confidence for s in solar_kw]
+
+        # Cap solar forecast at array maximum (input validation)
+        cap_kw = self._tunables.solar_forecast_cap_kw
+        if solar_kw:
+            for i, s in enumerate(solar_kw):
+                if s > cap_kw:
+                    _LOGGER.warning(
+                        "Solar forecast step %d capped: %.2f kW -> %.2f kW "
+                        "(exceeds array max)",
+                        i, s, cap_kw,
+                    )
+                    solar_kw[i] = cap_kw
+
         # Inject current real value for first interval
         if solar_kw:
             solar_kw[0] = current_solar_w / 1000.0  # W to kW
@@ -1756,6 +1803,26 @@ class ForecastBuilder:
                 "Hot water boost: +%.1fkW during %.1f-%.1f",
                 hw_kw, hw_start, hw_end,
             )
+
+        # Clamp load forecast to reasonable bounds (input validation)
+        load_min = self._tunables.load_forecast_min_kw
+        load_max = self._tunables.load_forecast_cap_kw
+        if load_kw:
+            for i, val in enumerate(load_kw):
+                if val > load_max:
+                    _LOGGER.warning(
+                        "Load forecast step %d capped: %.2f kW -> %.2f kW "
+                        "(exceeds max reasonable load)",
+                        i, val, load_max,
+                    )
+                    load_kw[i] = load_max
+                elif val < load_min:
+                    _LOGGER.warning(
+                        "Load forecast step %d clamped: %.2f kW -> %.2f kW "
+                        "(negative load rejected)",
+                        i, val, load_min,
+                    )
+                    load_kw[i] = load_min
 
         # Inject current real value
         if load_kw:

@@ -858,3 +858,90 @@ class TestSoCTargetReward:
         out = optimize(inp)
         assert out.status == "optimal"
         # The result should reflect the uniform 0.05 reward, not the 0.50 legacy
+
+
+class TestDischargeFloorAntiGridBuffer:
+    """Regression: discharge/hold register = floor - 5% buffer to prevent grid import."""
+
+    def test_discharge_register_has_5pct_buffer(self):
+        """Given SoC=50%, discharge floor ~45%, register should be ~40% (floor - 5%).
+
+        The optimizer sets register = discharge_floor_pct - 5.0 for discharge/hold
+        modes to prevent ESS from interpreting register ~ SoC as grid-charge.
+        """
+        # Create scenario: moderate price, no solar, battery discharging
+        inp = make_opt_input(
+            soc_pct=50.0,
+            solar_kw=0.0,
+            load_kw=1.5,
+            buy_price=0.30,
+            sell_price=0.06,
+            soc_min_pct=10.0,
+        )
+        out = optimize(inp)
+
+        assert out.status == "optimal"
+        # For discharge/hold, register should be below current SoC
+        # and should include the 5% buffer below the planned floor
+        current_soc_register = int(50.0 * 10)  # 500
+        assert out.target_register < current_soc_register, (
+            f"Register {out.target_register} should be below current SoC register {current_soc_register}"
+        )
+        # The discharge floor is the minimum planned SoC in next ~1h
+        # Buffer of 5% means register should be at least 50 below that floor
+        # Given the discharge trajectory, register should be well below 45%
+        assert out.target_register <= 450, (
+            f"Register {out.target_register} should be <= 450 (45% floor - buffer)"
+        )
+
+    def test_discharge_register_not_below_hard_minimum(self):
+        """Buffer should not push register below hardware minimum (10%)."""
+        inp = make_opt_input(
+            soc_pct=20.0,
+            solar_kw=0.0,
+            load_kw=2.0,
+            buy_price=0.30,
+            sell_price=0.06,
+            soc_min_pct=10.0,
+        )
+        out = optimize(inp)
+        assert out.target_register >= 90, (
+            f"Register {out.target_register} should not go below ~90 (hardware min)"
+        )
+
+
+class TestEveningHoldOscillationRegression:
+    """Regression: optimizer should not flip-flop between hold and discharge near evening."""
+
+    def test_consistent_mode_across_sequential_calls(self):
+        """Given stable evening prices and SoC near target, mode should be consistent."""
+        # Simulate evening peak: 6pm, high prices, SoC around 85%
+        # This is a typical scenario where oscillation was observed
+        evening_prices = [0.45] * STEPS_24H  # Stable evening price
+        solar = [0.0] * STEPS_24H  # No solar (evening)
+
+        result1 = optimize(make_opt_input(
+            soc_pct=85.0,
+            solar_kw=solar,
+            load_kw=1.5,
+            buy_price=evening_prices,
+            sell_price=0.06,
+            soc_min_pct=20.0,
+        ))
+
+        # Second call with SoC slightly changed (simulating 5-min passage)
+        result2 = optimize(make_opt_input(
+            soc_pct=84.5,
+            solar_kw=solar,
+            load_kw=1.5,
+            buy_price=evening_prices,
+            sell_price=0.06,
+            soc_min_pct=20.0,
+        ))
+
+        assert result1.status == "optimal"
+        assert result2.status == "optimal"
+        # Both should be in the same mode (discharge during expensive evening)
+        assert result1.mode == result2.mode, (
+            f"Mode oscillation: call1={result1.mode}, call2={result2.mode}"
+        )
