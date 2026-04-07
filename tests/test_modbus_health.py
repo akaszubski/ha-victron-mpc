@@ -42,6 +42,9 @@ def _make_coordinator(*, readback_pct: float = -1) -> VictronMPCCoordinator:
     coord._last_register_value = None
     coord._last_feedin_value = None
     coord._last_mode = None
+    coord._cycle_count = 0
+    coord._modbus_write_log = []
+    coord._modbus_write_log_max = 2016
 
     # Mock _get_r2901_readback to return the specified value
     coord._get_r2901_readback = MagicMock(return_value=readback_pct)

@@ -368,21 +368,35 @@ class TestBuildStrategicSnapshot:
     """Tests for build_strategic_snapshot — inclusion/exclusion of fields."""
 
     def test_includes_strategic_fields(self):
-        """Snapshot includes mode, SoC, price, band."""
+        """Snapshot includes observed state and LP intent sections."""
         data = {
             "mode": "discharge",
             "battery_soc_pct": 72,
             "buy_price": 0.25,
             "solar_forecast_today": 18.5,
+            "decision": {
+                "state": "discharge",
+                "battery_soc_pct": 72,
+                "intent": {
+                    "action": "discharge",
+                    "why": "Discharging at 2.0kW",
+                    "key_assumptions": {"buy_price_now": 0.25},
+                    "expected_outcomes": {"soc_in_1h_pct": 65},
+                    "constraints_active": {},
+                },
+                "weather_confidence": 1.0,
+            },
         }
-        extra = {"amber_band": "neutral"}
+        extra = {"amber_band": "neutral", "weather": "clear"}
         snapshot = build_strategic_snapshot(data, extra)
 
-        assert "Mode: discharge" in snapshot
+        assert "OBSERVED STATE" in snapshot
+        assert "LP STATED INTENT" in snapshot
         assert "SoC: 72%" in snapshot
         assert "$0.25" in snapshot
         assert "Amber Band: neutral" in snapshot
         assert "18.5" in snapshot
+        assert "discharge" in snapshot.lower()
 
     def test_excludes_operational_fields(self):
         """Snapshot must NOT include registers, power flows."""
@@ -437,14 +451,16 @@ class TestBuildStrategicSnapshot:
                 "shadow_mode": False,
                 "grid_import_w": 0,
                 "schedule_30min": "[60, 65, 70]",
+                "weather_confidence": 1.0,
+                "intent": {"action": "solar_charge", "why": "Solar charging", "key_assumptions": {}, "expected_outcomes": {}, "constraints_active": {}},
             },
             "buy_price": {"state": 0.15},
             "solar_forecast_today": {"state": 20.0},
         }
-        extra = {"amber_band": "low"}
+        extra = {"amber_band": "low", "weather": "clear"}
         snapshot = build_strategic_snapshot(data, extra)
 
-        assert "Mode: solar_charge" in snapshot
+        assert "solar_charge" in snapshot
         assert "SoC: 60%" in snapshot
         assert "$0.15" in snapshot
         assert "Amber Band: low" in snapshot
@@ -932,7 +948,7 @@ class TestRunGenaiHealthCheck:
         call_kwargs = session.post.call_args
         payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
         system_content = payload["messages"][0]["content"]
-        assert "strategic" in system_content.lower()
+        assert "alignment" in system_content.lower()
         assert "Never return RED" in system_content
 
     @pytest.mark.asyncio

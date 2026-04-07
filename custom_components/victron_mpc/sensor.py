@@ -169,6 +169,50 @@ SENSOR_DESCRIPTIONS: tuple[VictronMPCSensorDescription, ...] = (
         if isinstance(data, dict)
         else {},
     ),
+    VictronMPCSensorDescription(
+        key="mpc_genai_audit_log",
+        attr_key="genai_audit_log",
+        translation_key="genai_audit_log",
+        icon="mdi:clipboard-text-clock",
+        state_class=SensorStateClass.MEASUREMENT,
+        attributes_fn=lambda data: {
+            "entries": data.get("entries", []),
+            "false_positive_count": data.get("false_positive_count", 0),
+            "prompt_version": data.get("prompt_version", "unknown"),
+            "current_version": data.get("current_version", "unknown"),
+            "version_stats": data.get("version_stats", {}),
+        }
+        if isinstance(data, dict)
+        else {},
+    ),
+    VictronMPCSensorDescription(
+        key="mpc_human_feedback",
+        attr_key="human_feedback",
+        translation_key="human_feedback",
+        icon="mdi:account-voice",
+        state_class=SensorStateClass.MEASUREMENT,
+        attributes_fn=lambda data: {
+            "entries": data.get("entries", []),
+            "disagreement_stats": data.get("disagreement_stats", {}),
+            "total_entries": data.get("total_entries", 0),
+        }
+        if isinstance(data, dict)
+        else {},
+    ),
+    VictronMPCSensorDescription(
+        key="mpc_modbus_write_log",
+        attr_key="modbus_write_log",
+        translation_key="modbus_write_log",
+        icon="mdi:database-clock",
+        state_class=SensorStateClass.MEASUREMENT,
+        attributes_fn=lambda data: {
+            "entries": data.get("entries", []),
+            "rogue_write_count": data.get("rogue_write_count", 0),
+            "total_writes": data.get("total_writes", 0),
+        }
+        if isinstance(data, dict)
+        else {},
+    ),
 )
 
 

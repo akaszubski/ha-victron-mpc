@@ -96,7 +96,10 @@
       "solve_time": { "name": "Solver Time" },
       "genai_health": { "name": "GenAI Health" },
       "amber_forecast_accuracy": { "name": "Amber Forecast Accuracy" },
-      "appliance_monitor": { "name": "Appliance Monitor" }
+      "appliance_monitor": { "name": "Appliance Monitor" },
+      "genai_audit_log": { "name": "GenAI Audit Log" },
+      "human_feedback": { "name": "Human Feedback Log" },
+      "modbus_write_log": { "name": "Modbus Write Log" }
     },
     "number": {
       "battery_wear_cost": { "name": "Battery Wear Cost" },

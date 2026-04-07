@@ -1,0 +1,54 @@
+emergency_stop:
+  name: Emergency Stop
+  description: >-
+    Immediately disable MPC optimization. Sets battery to safe floor (30%)
+    and blocks all export. All future optimization cycles are skipped until
+    emergency_resume is called.
+
+emergency_resume:
+  name: Emergency Resume
+  description: >-
+    Clear emergency stop and resume normal MPC optimization cycles.
+    The next optimization cycle will run on the regular 5-minute schedule.
+
+record_feedback:
+  name: Record Human Feedback
+  description: >-
+    Record a human verdict on the current MPC / UAT / GenAI assessment.
+    Use when you agree, disagree, or want to override the system's recommendation.
+    The verdict, your reasoning, and a system snapshot are stored for phase-transition
+    analysis (disagreement rate tracks how well the autonomous system matches human judgement).
+  fields:
+    human_verdict:
+      name: Human Verdict
+      description: "Your assessment: 'agree' (system is correct), 'disagree' (system is wrong), or 'override' (you are changing the decision)."
+      required: true
+      selector:
+        select:
+          options:
+            - agree
+            - disagree
+            - override
+    human_reasoning:
+      name: Human Reasoning
+      description: "Free-text explanation of your decision. This is the tacit knowledge that gets encoded."
+      required: true
+      selector:
+        text:
+          multiline: true
+    uat_verdict:
+      name: UAT Verdict
+      description: "The UAT assessment at the time of feedback (optional — copy from /uat output)."
+      required: false
+      selector:
+        text:
+    genai_verdict:
+      name: GenAI Verdict
+      description: "The GenAI health status at the time of feedback (optional — GREEN, YELLOW, or RED)."
+      required: false
+      selector:
+        select:
+          options:
+            - GREEN
+            - YELLOW
+            - RED

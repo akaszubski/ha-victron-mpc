@@ -48,6 +48,7 @@ from .forecast_accuracy import compute_forecast_accuracy
 from .forecasts import ForecastBuilder
 from .genai_monitor import (
     GENAI_CYCLE_INTERVAL,
+    PROMPT_VERSION,
     build_strategic_snapshot,
     run_deterministic_checks,
     run_genai_health_check,
@@ -208,6 +209,14 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Audit log — every register write with full decision context (#56)
         self._audit_log: list[dict[str, Any]] = []
         self._audit_log_max = 2016  # 7 days × 288 cycles/day
+
+        # Human feedback log — captures human verdicts vs UAT/GenAI (#60)
+        self._human_feedback_log: list[dict[str, Any]] = []
+        self._human_feedback_log_max = 200
+
+        # Modbus write audit log — every register write with source tracking (#65)
+        self._modbus_write_log: list[dict[str, Any]] = []
+        self._modbus_write_log_max = 2016  # 7 days × 288 cycles/day
 
     async def _async_setup(self) -> None:
         """One-time setup called during first refresh (HA 2024.8+).
@@ -737,6 +746,10 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     int(forecasts.get("current_solar_w", 0)),
                     int(forecasts.get("current_load_w", 0)),
                     extra.get("grid_import_w", 0),
+                    details="; ".join(r["reason"] for r in deterministic_results),
+                    deterministic_checks=[r["check"] for r in deterministic_results],
+                    amber_band=(forecasts.get("price_bands") or ["unknown"])[0],
+                    weather=extra.get("weather", "unknown"),
                 )
                 LOGGER.warning("Deterministic RED: %s", first_red["reason"])
                 if self._genai_consecutive_red >= 2:
@@ -795,6 +808,10 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         int(forecasts.get("current_solar_w", 0)),
                         int(forecasts.get("current_load_w", 0)),
                         extra.get("grid_import_w", 0),
+                        details=genai_result.get("details", ""),
+                        deterministic_checks=[],
+                        amber_band=(forecasts.get("price_bands") or ["unknown"])[0],
+                        weather=extra.get("weather", "unknown"),
                     )
                     LOGGER.info(
                         "GenAI strategic: %s -- %s",
@@ -1011,8 +1028,29 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         solar_w: int,
         load_w: int,
         grid_import_w: int,
+        *,
+        details: str = "",
+        deterministic_checks: list[str] | None = None,
+        amber_band: str = "unknown",
+        weather: str = "unknown",
     ) -> None:
-        """Append health check result to rolling history buffer."""
+        """Append health check result to rolling history buffer.
+
+        Args:
+            source: Origin of the check ("deterministic" or "genai").
+            status: Overall status string ("GREEN", "YELLOW", "RED", or "?").
+            summary: Short human-readable summary of the result.
+            soc_pct: Battery state-of-charge at time of check.
+            mode: Current MPC operating mode (e.g. "discharge", "grid_charge").
+            buy_price: Current Amber buy price in $/kWh.
+            solar_w: Current solar generation in watts.
+            load_w: Current house load in watts.
+            grid_import_w: Current grid import in watts.
+            details: Full reasoning text from GenAI or deterministic details.
+            deterministic_checks: Names of checks that returned RED; empty if all GREEN.
+            amber_band: Current Amber price band descriptor (e.g. "low", "spike").
+            weather: Current weather condition string.
+        """
         # Deduplicate: skip if same as last entry
         if self._genai_history:
             last = self._genai_history[-1]
@@ -1024,6 +1062,11 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "source": source,
             "status": status,
             "summary": summary,
+            "details": details,
+            "prompt_version": PROMPT_VERSION,
+            "deterministic_checks": deterministic_checks if deterministic_checks is not None else [],
+            "amber_band": amber_band,
+            "weather": weather,
             "readings": {
                 "soc_pct": round(soc_pct, 1),
                 "mode": mode,
@@ -1035,6 +1078,130 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         })
         if len(self._genai_history) > self._genai_history_max:
             self._genai_history = self._genai_history[-self._genai_history_max:]
+
+    async def record_human_feedback(
+        self,
+        human_verdict: str,
+        human_reasoning: str,
+        uat_verdict: str = "",
+        genai_verdict: str = "",
+    ) -> None:
+        """Record a human feedback entry capturing human vs system verdicts.
+
+        Called via the ``record_feedback`` HA service when the human agrees,
+        disagrees, or overrides the UAT or GenAI assessment.
+
+        Args:
+            human_verdict: One of "agree", "disagree", or "override".
+            human_reasoning: Free-text explanation of the human's decision.
+            uat_verdict: The UAT assessment verdict at time of feedback (optional).
+            genai_verdict: The GenAI assessment verdict at time of feedback (optional).
+        """
+        # Build a resilient system snapshot — each state read uses .get() with
+        # safe defaults so the method works even in tests without HA.
+        soc_pct: float = 0.0
+        mode: str = "unknown"
+        buy_price: float = 0.0
+        solar_w: int = 0
+        load_w: int = 0
+        grid_import_w: int = 0
+        amber_band: str = "unknown"
+        weather: str = "unknown"
+
+        try:
+            data = self.data or {}
+            soc_pct = float(data.get("battery_plan") or 0.0)
+            mode = str(data.get("decision") or "unknown")
+            if isinstance(data.get("decision"), dict):
+                mode = data["decision"].get("state", "unknown")
+            buy_price = float(data.get("buy_price") or 0.0)
+            solar_w = int(data.get("solar_input_w") or 0)
+            load_w = int(data.get("load_input_w") or 0)
+        except (TypeError, ValueError):
+            pass
+
+        try:
+            forecasts = getattr(self, "_last_forecasts", {}) or {}
+            bands = forecasts.get("price_bands") or []
+            if bands:
+                amber_band = str(bands[0])
+            weather = str(forecasts.get("weather_condition", "unknown"))
+        except (TypeError, AttributeError):
+            pass
+
+        try:
+            grid_state = self.hass.states.get("sensor.victron_grid_power")
+            if grid_state and grid_state.state not in ("unknown", "unavailable"):
+                grid_import_w = max(0, int(float(grid_state.state)))
+        except (TypeError, ValueError, AttributeError):
+            pass
+
+        # Current GenAI status from last result
+        genai_status = self._last_genai_result.get("status", "") if self._last_genai_result else ""
+
+        entry: dict[str, Any] = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "human_verdict": human_verdict,
+            "human_reasoning": human_reasoning,
+            "uat_verdict": uat_verdict,
+            "genai_verdict": genai_verdict,
+            "genai_status": genai_status,
+            "prompt_version": PROMPT_VERSION,
+            "readings": {
+                "soc_pct": round(soc_pct, 1),
+                "mode": mode,
+                "buy_price": round(buy_price, 4),
+                "solar_w": solar_w,
+                "load_w": load_w,
+                "grid_import_w": grid_import_w,
+                "amber_band": amber_band,
+                "weather": weather,
+            },
+        }
+
+        self._human_feedback_log.append(entry)
+        if len(self._human_feedback_log) > self._human_feedback_log_max:
+            self._human_feedback_log = self._human_feedback_log[-self._human_feedback_log_max:]
+
+        LOGGER.info(
+            "Human feedback recorded: verdict=%s, uat=%s, genai=%s — %s",
+            human_verdict, uat_verdict, genai_verdict, human_reasoning,
+        )
+
+    def _compute_disagreement_stats(self) -> dict[str, Any]:
+        """Compute disagreement rate statistics from the human feedback log.
+
+        Returns:
+            Dict with total_feedback, disagree_count, agree_count,
+            disagreement_rate (0.0-1.0), and recent_7d sub-dict with the
+            same fields filtered to the last 7 days.
+        """
+        log = self._human_feedback_log
+        total = len(log)
+        disagree_count = sum(1 for e in log if e.get("human_verdict") == "disagree")
+        agree_count = sum(1 for e in log if e.get("human_verdict") == "agree")
+        rate = round(disagree_count / total, 4) if total > 0 else 0.0
+
+        # Recent 7-day window
+        cutoff = (datetime.now() - timedelta(days=7)).isoformat(timespec="seconds")
+        recent = [e for e in log if e.get("timestamp", "") >= cutoff]
+        recent_total = len(recent)
+        recent_disagree = sum(1 for e in recent if e.get("human_verdict") == "disagree")
+        recent_agree = sum(1 for e in recent if e.get("human_verdict") == "agree")
+        recent_rate = round(recent_disagree / recent_total, 4) if recent_total > 0 else 0.0
+
+        return {
+            "total_feedback": total,
+            "disagree_count": disagree_count,
+            "agree_count": agree_count,
+            "disagreement_rate": rate,
+            "recent_7d": {
+                "total_feedback": recent_total,
+                "disagree_count": recent_disagree,
+                "agree_count": recent_agree,
+                "disagreement_rate": recent_rate,
+            },
+        }
 
     def _get_r2901_readback(self) -> float:
         """Read R2901 from the Modbus sensor."""
@@ -1524,6 +1691,68 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # Sensor data builder
     # ------------------------------------------------------------------
 
+    def _compute_prompt_version_stats(self) -> dict[str, dict[str, Any]]:
+        """Compute per-prompt-version statistics from the GenAI history buffer.
+
+        Groups genai_history entries by their ``prompt_version`` field and
+        produces aggregate statistics for each version.  This enables
+        data-driven prompt calibration — callers can compare yellow_rate
+        across versions to measure whether a new prompt reduces false
+        positives.
+
+        Returns:
+            Dict keyed by version string (e.g. ``"v4"``).  Each value is a
+            dict with the following fields:
+
+            - ``total_assessments`` (int): Number of history entries for the
+              version.
+            - ``yellow_count`` (int): Entries whose ``status`` is ``"YELLOW"``.
+            - ``green_count`` (int): Entries whose ``status`` is ``"GREEN"``.
+            - ``error_count`` (int): Entries with status ``"ERROR"``,
+              ``"SKIP"``, or ``"?"`` (non-actionable results).
+            - ``yellow_rate`` (float): ``yellow_count / total_assessments``,
+              or 0.0 when there are no entries.
+            - ``first_seen`` (str): ISO 8601 timestamp of the earliest entry
+              for this version.
+            - ``last_seen`` (str): ISO 8601 timestamp of the most recent entry
+              for this version.
+        """
+        stats: dict[str, dict[str, Any]] = {}
+        for entry in self._genai_history:
+            version = entry.get("prompt_version", "unknown")
+            if version not in stats:
+                stats[version] = {
+                    "total_assessments": 0,
+                    "yellow_count": 0,
+                    "green_count": 0,
+                    "error_count": 0,
+                    "yellow_rate": 0.0,
+                    "first_seen": entry.get("timestamp", ""),
+                    "last_seen": entry.get("timestamp", ""),
+                }
+            bucket = stats[version]
+            bucket["total_assessments"] += 1
+            status = entry.get("status", "")
+            if status == "YELLOW":
+                bucket["yellow_count"] += 1
+            elif status == "GREEN":
+                bucket["green_count"] += 1
+            elif status in ("ERROR", "SKIP", "?"):
+                bucket["error_count"] += 1
+            ts = entry.get("timestamp", "")
+            if ts:
+                if not bucket["first_seen"] or ts < bucket["first_seen"]:
+                    bucket["first_seen"] = ts
+                if not bucket["last_seen"] or ts > bucket["last_seen"]:
+                    bucket["last_seen"] = ts
+
+        # Compute yellow_rate as a final pass to avoid repeated division
+        for bucket in stats.values():
+            total = bucket["total_assessments"]
+            bucket["yellow_rate"] = round(bucket["yellow_count"] / total, 4) if total > 0 else 0.0
+
+        return stats
+
     def _build_sensor_data(
         self,
         *,
@@ -1683,6 +1912,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "solar_used_next_kw": round(result.solar_used_schedule_kw[0], 2) if result.solar_used_schedule_kw else 0,
                 "solar_forecast_kwh_today": solar_forecast_kwh,
                 "weather_confidence": forecasts.get("weather_confidence", 1.0),
+                "intent": result.intent,
                 **soc_lookahead,
             },
             # Scalar sensors
@@ -1766,6 +1996,34 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "state": len(self._audit_log),
                 "entries": self._audit_log[-50:],
             },
+            # GenAI audit log — full history for analysis (#57)
+            # version_stats and current_version added for #61 prompt calibration
+            "genai_audit_log": {
+                "state": len(self._genai_history),
+                "entries": self._genai_history,
+                "false_positive_count": sum(
+                    1 for e in self._genai_history if e.get("status") == "YELLOW"
+                ),
+                "prompt_version": PROMPT_VERSION,
+                "current_version": PROMPT_VERSION,
+                "version_stats": self._compute_prompt_version_stats(),
+            },
+            # Human feedback log — captures human vs UAT/GenAI verdicts (#60)
+            "human_feedback": {
+                "state": len(self._human_feedback_log),
+                "entries": self._human_feedback_log[-50:],
+                "disagreement_stats": self._compute_disagreement_stats(),
+                "total_entries": len(self._human_feedback_log),
+            },
+            # Modbus write audit log — every register write with source tracking (#65)
+            "modbus_write_log": {
+                "state": len(self._modbus_write_log),
+                "entries": self._modbus_write_log[-50:],
+                "rogue_write_count": sum(
+                    1 for e in self._modbus_write_log if e.get("source") == "unknown_external"
+                ),
+                "total_writes": len(self._modbus_write_log),
+            },
         }
 
     # ------------------------------------------------------------------
@@ -1789,6 +2047,11 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         value = max(100, min(1000, value))  # Clamp to valid range
         previous = self._last_register_value
+
+        # Audit tracking — populated during write/verify loop
+        verified: bool | None = None
+        final_readback: float | None = None
+        persistent_mismatch = False
 
         for attempt in range(2):  # write + 1 retry
             try:
@@ -1819,8 +2082,11 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "R2901 written: %d (was %s), readback unavailable",
                     value, previous,
                 )
+                verified = None
+                final_readback = None
                 break
 
+            final_readback = readback
             # Tolerance: register is SoC% × 10, sensor is SoC%.
             # Accept if within 1% (10 register units).
             expected_pct = value / 10.0
@@ -1829,6 +2095,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "R2901 written: %d (was %s), readback %.1f%% — verified",
                     value, previous, readback,
                 )
+                verified = True
                 break
 
             if attempt == 0:
@@ -1838,6 +2105,8 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     value, value / 10.0, readback,
                 )
             else:
+                verified = False
+                persistent_mismatch = True
                 LOGGER.warning(
                     "R2901 READBACK MISMATCH PERSISTENT: wrote %d (%.1f%%) "
                     "but read %.1f%% after retry. Possible BatteryLife "
@@ -1851,6 +2120,41 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         self._last_register_value = value
         await self._modbus_write_success()
+
+        # Append to Modbus write audit log (#65)
+        log_entry: dict[str, Any] = {
+            "timestamp": datetime.now().isoformat(),
+            "register": REGISTER_ESS_MIN_SOC,
+            "register_name": "ess_min_soc",
+            "value": value,
+            "previous_value": previous,
+            "source": "hacs_mpc",
+            "verified": verified,
+            "readback_value": final_readback,
+            "cycle": getattr(self, "_cycle_count", None),
+            "mode": getattr(self, "_last_mode", None),
+            "reason": "R2901 write — ESS min SoC floor",
+        }
+        self._modbus_write_log.append(log_entry)
+        if len(self._modbus_write_log) > self._modbus_write_log_max:
+            self._modbus_write_log = self._modbus_write_log[-self._modbus_write_log_max:]
+
+        # If persistent mismatch detected, also log a rogue write suspicion entry
+        if persistent_mismatch and final_readback is not None:
+            rogue_entry: dict[str, Any] = {
+                "timestamp": datetime.now().isoformat(),
+                "register": REGISTER_ESS_MIN_SOC,
+                "register_name": "ess_min_soc",
+                "source": "unknown_external",
+                "expected_value": value,
+                "actual_value": int(final_readback * 10),
+                "alert": True,
+                "cycle": getattr(self, "_cycle_count", None),
+                "mode": getattr(self, "_last_mode", None),
+            }
+            self._modbus_write_log.append(rogue_entry)
+            if len(self._modbus_write_log) > self._modbus_write_log_max:
+                self._modbus_write_log = self._modbus_write_log[-self._modbus_write_log_max:]
 
     async def _write_feedin_register(self, value: int) -> None:
         """Write max grid feed-in register (R2706) via Modbus.
@@ -1869,6 +2173,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             value = REGISTER_FEEDIN_BLOCK
 
+        previous_feedin = self._last_feedin_value
         try:
             await self.hass.services.async_call(
                 "modbus",
@@ -1883,6 +2188,22 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             LOGGER.info("R2706 written: %d (was %s)", value, self._last_feedin_value)
             self._last_feedin_value = value
             await self._modbus_write_success()
+            # Append to Modbus write audit log (#65)
+            self._modbus_write_log.append({
+                "timestamp": datetime.now().isoformat(),
+                "register": REGISTER_MAX_FEED_IN,
+                "register_name": "max_feed_in",
+                "value": value,
+                "previous_value": previous_feedin,
+                "source": "hacs_mpc",
+                "verified": None,  # No read-back on R2706
+                "readback_value": None,
+                "cycle": getattr(self, "_cycle_count", None),
+                "mode": getattr(self, "_last_mode", None),
+                "reason": "R2706 write — max grid feed-in",
+            })
+            if len(self._modbus_write_log) > self._modbus_write_log_max:
+                self._modbus_write_log = self._modbus_write_log[-self._modbus_write_log_max:]
         except Exception:
             LOGGER.exception("Failed to write R2706=%d", value)
             await self._modbus_write_failure()
@@ -1912,6 +2233,22 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "value": 12,
                 },
             )
+            # Append to Modbus write audit log (#65)
+            self._modbus_write_log.append({
+                "timestamp": datetime.now().isoformat(),
+                "register": REGISTER_BATTERYLIFE_STATE,
+                "register_name": "batterylife_state",
+                "value": 12,
+                "previous_value": None,  # Not tracked separately
+                "source": "hacs_mpc",
+                "verified": None,  # No read-back on R2900
+                "readback_value": None,
+                "cycle": getattr(self, "_cycle_count", None),
+                "mode": getattr(self, "_last_mode", None),
+                "reason": "R2900 write — disable BatteryLife",
+            })
+            if len(self._modbus_write_log) > self._modbus_write_log_max:
+                self._modbus_write_log = self._modbus_write_log[-self._modbus_write_log_max:]
         except Exception:
             LOGGER.exception("Failed to write R2900=12 (BatteryLife disable)")
 

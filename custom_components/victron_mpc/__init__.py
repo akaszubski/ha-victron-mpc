@@ -29,6 +29,7 @@ from .coordinator import VictronMPCCoordinator
 
 SERVICE_EMERGENCY_STOP = "emergency_stop"
 SERVICE_EMERGENCY_RESUME = "emergency_resume"
+SERVICE_RECORD_FEEDBACK = "record_feedback"
 
 PLATFORMS: list[Platform] = [
     Platform.SENSOR,
@@ -80,6 +81,7 @@ async def async_unload_entry(
     # Remove services when the last entry is unloaded
     hass.services.async_remove(DOMAIN, SERVICE_EMERGENCY_STOP)
     hass.services.async_remove(DOMAIN, SERVICE_EMERGENCY_RESUME)
+    hass.services.async_remove(DOMAIN, SERVICE_RECORD_FEEDBACK)
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 
@@ -109,7 +111,29 @@ def _register_services(
         hass.services.async_register(
             DOMAIN, SERVICE_EMERGENCY_RESUME, _handle_emergency_resume, schema=vol.Schema({}),
         )
-    LOGGER.info("Registered services: %s.%s, %s.%s", DOMAIN, SERVICE_EMERGENCY_STOP, DOMAIN, SERVICE_EMERGENCY_RESUME)
+
+    async def _handle_record_feedback(call: ServiceCall) -> None:
+        """Handle record_feedback service call."""
+        await coordinator.record_human_feedback(
+            human_verdict=call.data["human_verdict"],
+            human_reasoning=call.data["human_reasoning"],
+            uat_verdict=call.data.get("uat_verdict", ""),
+            genai_verdict=call.data.get("genai_verdict", ""),
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_RECORD_FEEDBACK):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_RECORD_FEEDBACK,
+            _handle_record_feedback,
+            schema=vol.Schema({
+                vol.Required("human_verdict"): vol.In(["agree", "disagree", "override"]),
+                vol.Required("human_reasoning"): str,
+                vol.Optional("uat_verdict", default=""): str,
+                vol.Optional("genai_verdict", default=""): str,
+            }),
+        )
+    LOGGER.info("Registered services: %s.%s, %s.%s, %s.%s", DOMAIN, SERVICE_EMERGENCY_STOP, DOMAIN, SERVICE_EMERGENCY_RESUME, DOMAIN, SERVICE_RECORD_FEEDBACK)
 
 
 async def _async_update_options(
