@@ -29,7 +29,7 @@ GENAI_CYCLE_INTERVAL = 12
 # Prompt version — incremented each time the SYSTEM_PROMPT is significantly revised.
 # History: v1 initial, v2 add normal-pattern calibration, v3 add false-positive guidance,
 # v4 add phase-by-phase pattern library (current)
-PROMPT_VERSION = "v4"
+PROMPT_VERSION = "v5"
 
 
 # ---------------------------------------------------------------------------
@@ -263,14 +263,45 @@ def build_strategic_snapshot(
 
     now = datetime.now()
 
+    # Weather context — critical for understanding solar forecast reliability
+    weather = extra.get("weather", "unknown")
+    cloud_pct = coordinator_data.get("cloud_coverage", {})
+    if isinstance(cloud_pct, dict):
+        cloud_pct = cloud_pct.get("state", "?")
+    weather_confidence = coordinator_data.get("decision", {})
+    if isinstance(weather_confidence, dict):
+        weather_confidence = weather_confidence.get("weather_confidence", "?")
+    else:
+        weather_confidence = "?"
+    current_solar_w = coordinator_data.get("solar_input_w", "?")
+
+    # LP decision intent — why the optimizer chose this mode
+    decision = coordinator_data.get("decision", {})
+    if isinstance(decision, dict):
+        lp_reason = decision.get("reason", "")
+        override_applied = decision.get("override_applied", False)
+        override_reason = decision.get("override_reason", "")
+    else:
+        lp_reason = ""
+        override_applied = False
+        override_reason = ""
+
     lines = [
         f"Time: {now.strftime('%H:%M')} ({now.strftime('%A')})",
         f"Mode: {fields['mode']}",
+        f"LP Reasoning: {lp_reason}" if lp_reason else "LP Reasoning: (not available)",
+        f"Override Active: {override_reason}" if override_applied and override_reason else "",
         f"SoC: {fields['soc_pct']}%",
         f"Buy Price: ${fields['buy_price']}/kWh" if fields["buy_price"] is not None else "Buy Price: ?",
         f"Amber Band: {fields['amber_band']}" if fields["amber_band"] else "Amber Band: ?",
+        f"Weather: {weather}",
+        f"Cloud Coverage: {cloud_pct}%",
+        f"Weather Confidence Factor: {weather_confidence} (1.0=clear, 0.5=rain)",
+        f"Current Solar Output: {current_solar_w}W",
         f"Solar Forecast Remaining Today: {solar_forecast} kWh",
     ]
+    # Remove empty lines (e.g. when no override)
+    lines = [l for l in lines if l]
 
     if trajectory_str:
         lines.append(f"Planned trajectory (next 8h): {trajectory_str}")
@@ -396,6 +427,13 @@ and Amber Electric wholesale pricing.
 All operational checks have PASSED — registers, power flows, and safety conditions \
 are verified by deterministic monitors. Your job is ONLY strategic review.
 
+The snapshot includes "LP Reasoning" — this is the optimizer's own explanation for \
+its current mode choice. The LP has full 24h price forecasts, weather-adjusted solar \
+forecasts, and load predictions. It has MORE information than you do. \
+Your role is to spot cases where the LP's reasoning is INCONSISTENT with the data \
+shown (e.g. LP says "solar charging" but solar is 0W), NOT to second-guess the LP's \
+cost optimization when its reasoning is coherent with conditions.
+
 ## NORMAL DAILY PATTERN (calibrated from production data)
 
 These are EXPECTED behaviors — do NOT flag as YELLOW:
@@ -423,6 +461,15 @@ the LP buys cheap grid now to avoid higher prices overnight. Do NOT flag this.
 Phase 6 — Late Evening (21:00-22:00): Prices drop, discharge slows. \
 SoC may drop to 30-40% before overnight hold kicks in.
 
+## CRITICAL: Weather overrides solar expectations
+
+The snapshot includes Weather, Cloud Coverage %, and Weather Confidence Factor. \
+On rainy days (confidence 0.5) or overcast days (confidence 0.7), solar output is \
+drastically reduced. The LP knows this and adjusts accordingly. \
+If weather is "rainy" or cloud > 90%, grid_charge is almost certainly correct — \
+the LP is compensating for missing solar. Do NOT flag grid_charge as "premature" \
+or "wasting solar" when weather confidence is low. The solar simply will not arrive.
+
 ## CRITICAL: Amber band overrides time-of-day assumptions
 
 Wholesale pricing is volatile — the Amber Band in the snapshot ALWAYS takes precedence \
@@ -445,6 +492,8 @@ high/spike at ANY hour: discharge is expected. Grid_charge during high/spike IS 
 - SoC only reaching 75% on a cloudy day — system adapts, not a failure
 - Gentle overnight SoC decline — inverter efficiency losses, normal physics
 - Grid_charge during evening when Amber band is very_low or extremely_low — LP is buying cheap
+- Grid_charge on rainy/overcast days (confidence < 0.8) — LP compensates for missing solar
+- Grid_charge when current solar output < 500W and cloud > 80% — solar is physically unavailable
 
 Your default answer is GREEN. The system is well-tuned and operates correctly \
 the vast majority of the time. Return GREEN unless you can identify something \
