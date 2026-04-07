@@ -1912,6 +1912,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "solar_used_next_kw": round(result.solar_used_schedule_kw[0], 2) if result.solar_used_schedule_kw else 0,
                 "solar_forecast_kwh_today": solar_forecast_kwh,
                 "weather_confidence": forecasts.get("weather_confidence", 1.0),
+                "intent": result.intent,
                 **soc_lookahead,
             },
             # Scalar sensors

@@ -275,22 +275,43 @@ def build_strategic_snapshot(
         weather_confidence = "?"
     current_solar_w = coordinator_data.get("solar_input_w", "?")
 
-    # LP decision intent — why the optimizer chose this mode
+    # LP structured intent — the optimizer's reasoning chain
     decision = coordinator_data.get("decision", {})
     if isinstance(decision, dict):
-        lp_reason = decision.get("reason", "")
+        intent = decision.get("intent", {})
         override_applied = decision.get("override_applied", False)
         override_reason = decision.get("override_reason", "")
     else:
-        lp_reason = ""
+        intent = {}
         override_applied = False
         override_reason = ""
 
+    # Format intent for GenAI
+    intent_lines = []
+    if intent:
+        intent_lines.append(f"LP Action: {intent.get('action', '?')}")
+        intent_lines.append(f"LP Reasoning: {intent.get('why', '?')}")
+        assumptions = intent.get("key_assumptions", {})
+        if assumptions:
+            intent_lines.append("LP Key Assumptions:")
+            for k, v in assumptions.items():
+                intent_lines.append(f"  {k}: {v}")
+        outcomes = intent.get("expected_outcomes", {})
+        if outcomes:
+            intent_lines.append("LP Expected Outcomes:")
+            for k, v in outcomes.items():
+                if v is not None:
+                    intent_lines.append(f"  {k}: {v}")
+        constraints = intent.get("constraints_active", {})
+        active = [k for k, v in constraints.items() if v]
+        if active:
+            intent_lines.append(f"Active Constraints: {', '.join(active)}")
+    if override_applied and override_reason:
+        intent_lines.append(f"Override Active: {override_reason}")
+
     lines = [
+        "== OBSERVED STATE ==",
         f"Time: {now.strftime('%H:%M')} ({now.strftime('%A')})",
-        f"Mode: {fields['mode']}",
-        f"LP Reasoning: {lp_reason}" if lp_reason else "LP Reasoning: (not available)",
-        f"Override Active: {override_reason}" if override_applied and override_reason else "",
         f"SoC: {fields['soc_pct']}%",
         f"Buy Price: ${fields['buy_price']}/kWh" if fields["buy_price"] is not None else "Buy Price: ?",
         f"Amber Band: {fields['amber_band']}" if fields["amber_band"] else "Amber Band: ?",
@@ -299,9 +320,12 @@ def build_strategic_snapshot(
         f"Weather Confidence Factor: {weather_confidence} (1.0=clear, 0.5=rain)",
         f"Current Solar Output: {current_solar_w}W",
         f"Solar Forecast Remaining Today: {solar_forecast} kWh",
+        "",
+        "== LP STATED INTENT ==",
+        *intent_lines,
     ]
-    # Remove empty lines (e.g. when no override)
-    lines = [l for l in lines if l]
+    # Remove empty lines except the separator
+    lines = [l for l in lines if l or l == ""]
 
     if trajectory_str:
         lines.append(f"Planned trajectory (next 8h): {trajectory_str}")
@@ -421,90 +445,62 @@ def build_health_snapshot(
 
 
 SYSTEM_PROMPT = """\
-You are a strategic advisor for a home battery system with Victron ESS \
-and Amber Electric wholesale pricing.
+You are an alignment auditor for a home battery LP optimizer (Victron ESS + Amber \
+Electric wholesale pricing).
 
-All operational checks have PASSED — registers, power flows, and safety conditions \
-are verified by deterministic monitors. Your job is ONLY strategic review.
+All operational checks have PASSED. Deterministic monitors handle safety. \
+Your SOLE job is to validate that the LP optimizer's STATED INTENT aligns with \
+OBSERVED REALITY.
 
-The snapshot includes "LP Reasoning" — this is the optimizer's own explanation for \
-its current mode choice. The LP has full 24h price forecasts, weather-adjusted solar \
-forecasts, and load predictions. It has MORE information than you do. \
-Your role is to spot cases where the LP's reasoning is INCONSISTENT with the data \
-shown (e.g. LP says "solar charging" but solar is 0W), NOT to second-guess the LP's \
-cost optimization when its reasoning is coherent with conditions.
+## YOUR ROLE: Intent-Execution Alignment
 
-## NORMAL DAILY PATTERN (calibrated from production data)
+The snapshot has two sections:
+1. **OBSERVED STATE** — what sensors actually show (SoC, weather, solar, prices)
+2. **LP STATED INTENT** — the optimizer's reasoning: what it chose, why, its \
+   key assumptions, and expected outcomes
 
-These are EXPECTED behaviors — do NOT flag as YELLOW:
+Your job: check whether the LP's stated assumptions match observed reality. \
+If they align → GREEN. If they contradict → YELLOW.
 
-Phase 1 — Overnight (22:00-06:00): SoC drifts from 40-55% down to 30-35%. \
-Grid import 400-800W is NORMAL (battery at floor, grid serves house load). \
-Mode: hold or gentle discharge. This is not an emergency.
+## ALIGNMENT CHECKS (in priority order)
 
-Phase 2 — Shaded Morning (06:00-11:00): SoC 30-38%, solar 0-500W (trees block panels). \
-Grid import 600-1200W is NORMAL. Battery may discharge slightly to supplement solar. \
-Low solar before 11am is physical shading, not a forecast error.
+1. **Assumption check**: Do the LP's "key_assumptions" match observed state?
+   - LP assumes solar_total_remaining_kwh=5.0 but weather is rainy, cloud 99%, \
+     current solar only 200W → MISALIGNED (LP overestimates solar)
+   - LP assumes buy_price_now=$0.15 and observed buy price is $0.15 → ALIGNED
 
-Phase 3 — Solar Ramp (11:00-13:00): Solar breaks through shade, 500W-4000W. \
-SoC climbs from 35% toward 60%+. Mode switches to solar_charge. \
-Grid import drops to near zero. This ramp happens every day.
+2. **Action-condition check**: Does the chosen action make sense given conditions?
+   - LP says grid_charge, weather is rainy, solar < 500W → ALIGNED \
+     (grid_charge compensates for missing solar)
+   - LP says solar_charge but current solar is 0W and cloud 100% → MISALIGNED
+   - LP says discharge during spike → ALIGNED (selling expensive)
 
-Phase 4 — Peak Solar (13:00-16:00): Solar 3000-5000W, battery charges at 2-4kW. \
-SoC climbs to 80-100%. On cloudy days, may only reach 70-80% — this is fine.
+3. **Outcome plausibility**: Are expected outcomes achievable?
+   - LP expects soc_at_sunset=95% but only 0.5 kWh solar remaining and SoC is 40% \
+     and no grid_charge planned → MISALIGNED
+   - LP expects soc_in_1h rising and it's grid_charging → ALIGNED
 
-Phase 5 — Evening Peak (17:00-21:00): TYPICALLY battery discharges at $0.20-0.30/kWh. \
-SoC drops from 80-100% toward 35-50%. Grid import near zero. \
-HOWEVER: if Amber band is very_low or extremely_low, grid_charge is correct — \
-the LP buys cheap grid now to avoid higher prices overnight. Do NOT flag this.
+## WHEN TO FLAG YELLOW
 
-Phase 6 — Late Evening (21:00-22:00): Prices drop, discharge slows. \
-SoC may drop to 30-40% before overnight hold kicks in.
-
-## CRITICAL: Weather overrides solar expectations
-
-The snapshot includes Weather, Cloud Coverage %, and Weather Confidence Factor. \
-On rainy days (confidence 0.5) or overcast days (confidence 0.7), solar output is \
-drastically reduced. The LP knows this and adjusts accordingly. \
-If weather is "rainy" or cloud > 90%, grid_charge is almost certainly correct — \
-the LP is compensating for missing solar. Do NOT flag grid_charge as "premature" \
-or "wasting solar" when weather confidence is low. The solar simply will not arrive.
-
-## CRITICAL: Amber band overrides time-of-day assumptions
-
-Wholesale pricing is volatile — the Amber Band in the snapshot ALWAYS takes precedence \
-over typical time-of-day patterns above. \
-extremely_low/very_low at ANY hour: grid_charge is rational (grid_charge_boost active). \
-high/spike at ANY hour: discharge is expected. Grid_charge during high/spike IS a concern.
-
-## WHEN TO FLAG YELLOW (genuine strategic concerns only)
-
-- Sunset target at risk: SoC < 70% after 15:00 with declining solar AND cloudy forecast
-- Unusual price pattern: spike predicted but battery is low, or extremely_low not being exploited
-- Multi-day trend: consecutive days of not reaching 95% by sunset suggests tuning issue
-- Load anomaly: sustained 3kW+ load (AC) that the trajectory doesn't account for
+ONLY when you find a concrete misalignment:
+- LP assumptions contradict observed sensor data
+- LP action contradicts its own stated reasoning
+- LP expected outcomes are physically impossible given constraints
 
 ## WHEN TO STAY GREEN
 
-- SoC at 30-35% overnight or during morning shading — this is the designed floor
-- Grid import during hold/floor — battery can't serve load at floor, grid fills the gap
-- Solar < 500W before 11am — trees, not clouds
-- SoC only reaching 75% on a cloudy day — system adapts, not a failure
-- Gentle overnight SoC decline — inverter efficiency losses, normal physics
-- Grid_charge during evening when Amber band is very_low or extremely_low — LP is buying cheap
-- Grid_charge on rainy/overcast days (confidence < 0.8) — LP compensates for missing solar
-- Grid_charge when current solar output < 500W and cloud > 80% — solar is physically unavailable
+- LP intent is coherent with observed conditions — even if you'd choose differently
+- You lack information to disprove an LP assumption — trust the LP
+- The LP has 24h of price/solar/load forecasts you don't see — if its reasoning \
+  is internally consistent with what you CAN see, it's GREEN
 
-Your default answer is GREEN. The system is well-tuned and operates correctly \
-the vast majority of the time. Return GREEN unless you can identify something \
-clearly wrong that does not match ANY of the normal phases above.
+Your default is GREEN. The LP is well-tuned and correct the vast majority of the \
+time. YELLOW only for concrete, provable misalignment between stated intent and \
+observed reality.
 
-YELLOW means: "this specific condition will cause meaningful financial loss or \
-miss a critical target if not addressed in the next 1-2 hours." A vague concern \
-or theoretical risk is not YELLOW — it must be concrete and imminent. If in doubt, \
-return GREEN.
+If GREEN: one sentence confirming alignment. \
+If YELLOW: state which specific assumption or action is misaligned and why.
 
-Keep it brief — one sentence for GREEN, 2-3 sentences only for YELLOW.
 Never return RED — deterministic checks handle critical issues.
 
 Respond in JSON only:

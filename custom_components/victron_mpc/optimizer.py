@@ -98,6 +98,7 @@ class OptOutput:
     target_register: int  # Register 2901 value (100-1000)
     mode: str  # "grid_charge", "solar_charge", "discharge", "hold"
     reason: str  # Human-readable explanation
+    intent: dict  # Structured LP reasoning for GenAI validation
 
     # Full trajectories (length = horizon_steps + 1 for soc)
     soc_trajectory_pct: list[float]
@@ -480,12 +481,57 @@ def _build_output(result, inputs: OptInput, solve_ms: float) -> OptOutput:
         inputs.solar_forecast_kw[0], inputs.buy_price[0], inputs.sell_price[0],
     )
 
+    # Build structured intent — LP's reasoning chain for GenAI validation
+    solar_next_1h = sum(float(s) for s in inputs.solar_forecast_kw[:12]) * dt
+    load_next_1h = sum(float(l) for l in inputs.load_forecast_kw[:12]) * dt
+    solar_total_remaining = sum(float(s) for s in inputs.solar_forecast_kw) * dt
+    avg_buy_next_4h = (
+        sum(float(p) for p in inputs.buy_price[:min(48, N)]) / min(48, N)
+        if N > 0 else 0
+    )
+    peak_buy_next_4h = max(
+        (float(p) for p in inputs.buy_price[:min(48, N)]), default=0
+    )
+    soc_at_sunset = (
+        round(soc_pct[inputs.sunset_step], 1)
+        if inputs.sunset_step is not None and inputs.sunset_step < len(soc_pct)
+        else None
+    )
+
+    intent = {
+        "action": mode,
+        "why": reason,
+        "key_assumptions": {
+            "solar_next_1h_kwh": round(solar_next_1h, 2),
+            "solar_total_remaining_kwh": round(solar_total_remaining, 2),
+            "load_next_1h_kwh": round(load_next_1h, 2),
+            "buy_price_now": round(float(inputs.buy_price[0]), 4),
+            "avg_buy_next_4h": round(avg_buy_next_4h, 4),
+            "peak_buy_next_4h": round(peak_buy_next_4h, 4),
+        },
+        "expected_outcomes": {
+            "soc_in_1h_pct": round(soc_pct[min(12, len(soc_pct) - 1)], 1),
+            "soc_in_2h_pct": round(soc_pct[min(24, len(soc_pct) - 1)], 1),
+            "soc_at_sunset_pct": soc_at_sunset,
+            "total_cost_24h": round(grid_cost - export_revenue + wear_cost, 4),
+        },
+        "constraints_active": {
+            "sunset_target": inputs.sunset_step is not None,
+            "overnight_floor": any(
+                soc_pct[t] <= inputs.soc_min_kwh / inputs.battery_capacity_kwh * 100 + 2
+                for t in range(min(len(soc_pct), N))
+            ),
+            "spike_response": is_spike,
+        },
+    }
+
     return OptOutput(
         status="optimal",
         target_soc_pct=round(target_soc_pct, 1),
         target_register=target_register,
         mode=mode,
         reason=reason,
+        intent=intent,
         soc_trajectory_pct=[round(s, 1) for s in soc_pct],
         charge_schedule_kw=[round(float(v), 2) for v in p_charge],
         discharge_schedule_kw=[round(float(v), 2) for v in p_discharge],
@@ -518,6 +564,7 @@ def _build_fallback(inputs: OptInput, error_msg: str, solve_ms: float) -> OptOut
         target_register=_soc_to_register(target_pct),
         mode="hold",
         reason=f"Solver failed ({error_msg}), using safe fallback",
+        intent={"action": "hold", "why": f"Solver failed: {error_msg}", "key_assumptions": {}, "expected_outcomes": {}, "constraints_active": {}},
         soc_trajectory_pct=[round(target_pct, 1)] * (N + 1),
         charge_schedule_kw=[0.0] * N,
         discharge_schedule_kw=[0.0] * N,
