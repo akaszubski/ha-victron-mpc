@@ -26,6 +26,11 @@ _LOGGER = logging.getLogger(__name__)
 # Cycle counter -- GenAI runs every 12th cycle (hourly)
 GENAI_CYCLE_INTERVAL = 12
 
+# Prompt version — incremented each time the SYSTEM_PROMPT is significantly revised.
+# History: v1 initial, v2 add normal-pattern calibration, v3 add false-positive guidance,
+# v4 add phase-by-phase pattern library (current)
+PROMPT_VERSION = "v4"
+
 
 # ---------------------------------------------------------------------------
 # Layer 1: Deterministic checks (every cycle, no LLM)

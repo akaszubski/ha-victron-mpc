@@ -14,3 +14,11 @@ htmlcov/
 .ruff_cache/
 .mypy_cache/
 autotune/data/*.json
+
+# ===== Secrets & auth =====
+.env
+.env.*
+!.env.example
+*.key
+secrets.yaml
+ha-api.md
