@@ -393,7 +393,9 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 morning_steps,
                 arbitrage_threshold=tunables.overnight_arbitrage_threshold,
                 battery_wear_cost=tunables.battery_wear_cost,
-                discharge_penalty=tunables.soc_profile_overnight + tunables.grid_import_penalty,
+                # Only soc_profile_overnight — grid_import_penalty penalises grid
+                # import, not discharge. Including it deflates the adaptive floor.
+                discharge_penalty=tunables.soc_profile_overnight,
             )
 
             opt_input = OptInput(
