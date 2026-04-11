@@ -20,6 +20,11 @@ from scipy.optimize import linprog
 # Hysteresis for BMS integer rounding — don't grid_charge for ≤1% dip below floor
 GRID_CHARGE_HYSTERESIS_PCT = 1.0
 
+# Mode persistence threshold (kW) — suppress mode changes between non-grid-charge
+# modes when net power flow is below this value. Reduces daytime thrashing
+# caused by LP re-solving every 5 min with small SoC/price changes. GitHub #78.
+MODE_PERSISTENCE_THRESHOLD_KW = 0.3
+
 
 @dataclass
 class OptInput:
@@ -87,6 +92,10 @@ class OptInput:
     # When set (length = horizon_steps), the unified reward is used instead of
     # the legacy separate reward mechanisms. None = use legacy rewards.
     soc_target_reward: list[float] | None = None
+
+    # Previous mode — used for mode persistence to reduce daytime thrashing.
+    # When set, marginal mode changes between non-grid-charge modes are suppressed.
+    previous_mode: str | None = None
 
 
 @dataclass
@@ -463,7 +472,24 @@ def _build_output(result, inputs: OptInput, solve_ms: float) -> OptOutput:
         solar_used[0], inputs.load_forecast_kw[0],
         inputs.buy_price[0], inputs.sell_price[0],
         soc_pct[0], target_soc_pct,
+        solar_forecast_kw=float(inputs.solar_forecast_kw[0]),
     )
+
+    # Mode persistence: avoid thrashing between non-grid-charge modes
+    # when power flows are marginal. Grid_charge transitions are always immediate
+    # since they use different register logic (register = target, not floor).
+    # GitHub issue #78.
+    if (inputs.previous_mode is not None
+            and mode != inputs.previous_mode
+            and mode != "grid_charge"
+            and inputs.previous_mode != "grid_charge"
+            and abs(float(p_charge[0]) - float(p_discharge[0])) < MODE_PERSISTENCE_THRESHOLD_KW):
+        reason = (
+            f"Mode retained ({inputs.previous_mode}) — marginal power flow "
+            f"({abs(float(p_charge[0]) - float(p_discharge[0])):.2f}kW "
+            f"< {MODE_PERSISTENCE_THRESHOLD_KW}kW)"
+        )
+        mode = inputs.previous_mode
 
     # Override grid_charge to hold when hysteresis detected
     if hysteresis_hold and mode == "grid_charge":
@@ -484,7 +510,18 @@ def _build_output(result, inputs: OptInput, solve_ms: float) -> OptOutput:
     # Build structured intent — LP's reasoning chain for GenAI validation
     solar_next_1h = sum(float(s) for s in inputs.solar_forecast_kw[:12]) * dt
     load_next_1h = sum(float(l) for l in inputs.load_forecast_kw[:12]) * dt
-    solar_total_remaining = sum(float(s) for s in inputs.solar_forecast_kw) * dt
+    # Sum solar only to sunset (today's remaining), not full 24h horizon.
+    # After sunset, sunset_step is None — check if current solar is negligible
+    # to avoid reporting next-day solar as "remaining today".
+    if inputs.sunset_step is not None:
+        sunset_idx = inputs.sunset_step
+    elif float(inputs.solar_forecast_kw[0]) < 0.1:
+        # Sun has set (no current solar) — remaining today is 0
+        sunset_idx = 0
+    else:
+        # Sunrise before sunset computed (edge case) — use full horizon
+        sunset_idx = N
+    solar_total_remaining = sum(float(s) for s in inputs.solar_forecast_kw[:sunset_idx]) * dt
     avg_buy_next_4h = (
         sum(float(p) for p in inputs.buy_price[:min(48, N)]) / min(48, N)
         if N > 0 else 0
@@ -493,9 +530,32 @@ def _build_output(result, inputs: OptInput, solve_ms: float) -> OptOutput:
         (float(p) for p in inputs.buy_price[:min(48, N)]), default=0
     )
     soc_at_sunset = (
-        round(soc_pct[inputs.sunset_step], 1)
+        float(round(soc_pct[inputs.sunset_step], 1))
         if inputs.sunset_step is not None and inputs.sunset_step < len(soc_pct)
         else None
+    )
+
+    # Build principles assessment — evaluate operating principles against LP results
+    total_cost = grid_cost - export_revenue + wear_cost
+    from .principles import evaluate_principles
+
+    # Convert soc_pct to plain floats to avoid numpy types in JSON
+    soc_pct_float = [float(s) for s in soc_pct]
+
+    principles = evaluate_principles(
+        mode=mode,
+        soc_pct=soc_pct_float,
+        buy_price_now=float(inputs.buy_price[0]),
+        solar_forecast_kw=[float(s) for s in inputs.solar_forecast_kw],
+        solar_used=[float(s) for s in solar_used],
+        p_discharge=[float(d) for d in p_discharge],
+        battery_capacity_kwh=inputs.battery_capacity_kwh,
+        total_cost=total_cost,
+        grid_cost=grid_cost,
+        wear_cost=wear_cost,
+        sunset_step=inputs.sunset_step,
+        dt=dt,
+        is_spike=is_spike,
     )
 
     intent = {
@@ -510,9 +570,9 @@ def _build_output(result, inputs: OptInput, solve_ms: float) -> OptOutput:
             "peak_buy_next_4h": round(peak_buy_next_4h, 4),
         },
         "expected_outcomes": {
-            "soc_in_1h_pct": round(soc_pct[min(12, len(soc_pct) - 1)], 1),
-            "soc_in_2h_pct": round(soc_pct[min(24, len(soc_pct) - 1)], 1),
-            "soc_at_sunset_pct": soc_at_sunset,
+            "soc_in_1h_pct": float(round(soc_pct[min(12, len(soc_pct) - 1)], 1)),
+            "soc_in_2h_pct": float(round(soc_pct[min(24, len(soc_pct) - 1)], 1)),
+            "soc_at_sunset_pct": float(soc_at_sunset) if soc_at_sunset is not None else None,
             "total_cost_24h": round(grid_cost - export_revenue + wear_cost, 4),
         },
         "constraints_active": {
@@ -523,6 +583,9 @@ def _build_output(result, inputs: OptInput, solve_ms: float) -> OptOutput:
             ),
             "spike_response": is_spike,
         },
+        "principles_active": principles,
+        "principles": principles,
+        "override_applied": False,
     }
 
     return OptOutput(
@@ -564,7 +627,20 @@ def _build_fallback(inputs: OptInput, error_msg: str, solve_ms: float) -> OptOut
         target_register=_soc_to_register(target_pct),
         mode="hold",
         reason=f"Solver failed ({error_msg}), using safe fallback",
-        intent={"action": "hold", "why": f"Solver failed: {error_msg}", "key_assumptions": {}, "expected_outcomes": {}, "constraints_active": {}},
+        intent={
+            "action": "hold",
+            "why": f"Solver failed: {error_msg}",
+            "key_assumptions": {},
+            "expected_outcomes": {},
+            "constraints_active": {},
+            "principles_active": [
+                {
+                    "id": "cost_minimisation",
+                    "satisfied": False,
+                    "detail": "Solver failed — using safe fallback",
+                }
+            ],
+        },
         soc_trajectory_pct=[round(target_pct, 1)] * (N + 1),
         charge_schedule_kw=[0.0] * N,
         discharge_schedule_kw=[0.0] * N,
@@ -577,6 +653,9 @@ def _build_fallback(inputs: OptInput, error_msg: str, solve_ms: float) -> OptOut
         solver_status=f"failed: {error_msg}",
         solve_time_ms=round(solve_ms, 1),
     )
+
+
+    # _build_principles removed — replaced by principles.evaluate_principles()
 
 
 def _soc_to_register(soc_pct: float) -> int:
@@ -596,9 +675,19 @@ def _determine_mode(
     solar_used: float, load_kw: float,
     buy_price: float, sell_price: float,
     current_soc_pct: float, target_soc_pct: float,
+    solar_forecast_kw: float = 0.0,
 ) -> tuple[str, str]:
-    """Determine operating mode and human-readable reason."""
+    """Determine operating mode and human-readable reason.
+
+    Args:
+        solar_forecast_kw: Current solar forecast (kW). Used to guard against
+            solar_charge mode when forecast is negligible (e.g. at night).
+    """
     threshold = 0.1  # kW threshold for "significant" power flow
+    # Solar forecast must be meaningful to qualify as solar_charge.
+    # Prevents LP micro-allocations from triggering solar_charge at night
+    # when Solcast provides tiny twilight/atmospheric values (0.01-0.05 kW).
+    solar_min_kw = 0.2
 
     if p_charge > threshold and grid_import > load_kw + threshold:
         delta = target_soc_pct - current_soc_pct
@@ -607,7 +696,8 @@ def _determine_mode(
             f"(+{delta:.0f}% SoC, {p_charge:.1f}kW)"
         )
 
-    if p_charge > threshold and solar_used > threshold:
+    if (p_charge > threshold and solar_used > threshold
+            and solar_forecast_kw >= solar_min_kw):
         return "solar_charge", (
             f"Solar charging at {solar_used:.1f}kW, "
             f"battery {current_soc_pct:.0f}% -> {target_soc_pct:.0f}%"

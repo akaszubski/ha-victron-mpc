@@ -137,29 +137,6 @@ NUMBER_DESCRIPTIONS: tuple[VictronMPCNumberDescription, ...] = (
         mode=NumberMode.BOX,
         icon="mdi:transmission-tower-export",
     ),
-    # Overnight hold reward price thresholds
-    VictronMPCNumberDescription(
-        key="mpc_overnight_price_low",
-        option_key="overnight_price_low",
-        translation_key="overnight_price_low",
-        native_min_value=0.05,
-        native_max_value=0.30,
-        native_step=0.01,
-        native_unit_of_measurement="$/kWh",
-        mode=NumberMode.BOX,
-        icon="mdi:cash-minus",
-    ),
-    VictronMPCNumberDescription(
-        key="mpc_overnight_price_high",
-        option_key="overnight_price_high",
-        translation_key="overnight_price_high",
-        native_min_value=0.15,
-        native_max_value=0.50,
-        native_step=0.01,
-        native_unit_of_measurement="$/kWh",
-        mode=NumberMode.BOX,
-        icon="mdi:cash-plus",
-    ),
 )
 
 # Defaults matching the working MPCTunables from config.py
@@ -174,8 +151,6 @@ _DEFAULTS: dict[str, float] = {
     "defensive_price": 2.00,
     "amber_blip_minutes": 10,
     "feedin_export_threshold": 0.10,
-    "overnight_price_low": 0.15,
-    "overnight_price_high": 0.25,
 }
 
 

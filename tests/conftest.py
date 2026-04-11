@@ -47,6 +47,7 @@ def make_opt_input(
     grid_charge_boost: float = 0.0,
     soc_target_reward: list[float] | None = None,
     soc_min_schedule_kwh: list[float] | None = None,
+    previous_mode: str | None = None,
 ) -> OptInput:
     """Create OptInput with sensible defaults. Scalars are broadcast to arrays."""
 
@@ -88,6 +89,7 @@ def make_opt_input(
         grid_charge_boost=grid_charge_boost,
         soc_target_reward=soc_target_reward,
         soc_min_schedule_kwh=soc_min_schedule_kwh,
+        previous_mode=previous_mode,
     )
 
 

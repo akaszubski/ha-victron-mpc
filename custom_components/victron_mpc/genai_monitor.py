@@ -29,7 +29,7 @@ GENAI_CYCLE_INTERVAL = 12
 # Prompt version — incremented each time the SYSTEM_PROMPT is significantly revised.
 # History: v1 initial, v2 add normal-pattern calibration, v3 add false-positive guidance,
 # v4 add phase-by-phase pattern library (current)
-PROMPT_VERSION = "v5"
+PROMPT_VERSION = "v7"
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +306,14 @@ def build_strategic_snapshot(
         active = [k for k, v in constraints.items() if v]
         if active:
             intent_lines.append(f"Active Constraints: {', '.join(active)}")
+    # Format principles for GenAI
+    principles = intent.get("principles_active", [])
+    if principles:
+        intent_lines.append("Principles Assessment:")
+        for p in principles:
+            status = "\u2713" if p.get("satisfied") else "\u2717 UNSATISFIED"
+            intent_lines.append(f"  [{status}] {p['id']}: {p.get('detail', '')}")
+
     if override_applied and override_reason:
         intent_lines.append(f"Override Active: {override_reason}")
 
@@ -480,6 +488,10 @@ If they align → GREEN. If they contradict → YELLOW.
      and no grid_charge planned → MISALIGNED
    - LP expects soc_in_1h rising and it's grid_charging → ALIGNED
 
+IMPORTANT: solar_next_1h_kwh is a FORECAST SUM of 12 five-minute steps with cloud \
+derating. It will normally be LESS than current_solar_kw * 1h when solar is declining \
+or clouds are forecast. This is expected behavior, NOT a misalignment.
+
 ## WHEN TO FLAG YELLOW
 
 ONLY when you find a concrete misalignment:
@@ -497,6 +509,27 @@ ONLY when you find a concrete misalignment:
 Your default is GREEN. The LP is well-tuned and correct the vast majority of the \
 time. YELLOW only for concrete, provable misalignment between stated intent and \
 observed reality.
+
+## PRINCIPLE VALIDATION
+
+The LP reports which operating principles are active and whether each is satisfied.
+Your primary job is checking UNSATISFIED principles:
+
+For each "✗ UNSATISFIED" principle:
+1. Is the LP aware it's unsatisfied? (it should be — it reported it)
+2. Is there a good reason? (e.g., sunset_readiness unsatisfied because grid price is \
+$0.30 — too expensive to charge)
+3. Does the tradeoff make sense given other principles? (e.g., sacrificing \
+sunset_readiness to serve cost_minimisation at $0.30)
+
+GREEN if:
+- All principles satisfied, OR
+- Unsatisfied principles have justified tradeoffs (cost vs readiness, etc.)
+
+YELLOW if:
+- A principle is unsatisfied AND the conditions don't justify it \
+(e.g., sunset_readiness unsatisfied but grid is cheap at $0.10 — should be charging)
+- The LP's tradeoff reasoning contradicts observed data
 
 If GREEN: one sentence confirming alignment. \
 If YELLOW: state which specific assumption or action is misaligned and why.
@@ -582,6 +615,10 @@ async def run_genai_health_check(
                 "summary": result.get("summary", ""),
                 "details": result.get("details", ""),
             }
+
+            # Ensure summary is never empty — helps debugging and audit
+            if not parsed.get("summary"):
+                parsed["summary"] = f"GenAI returned {parsed['status']} (no summary provided)"
 
             # GenAI layer cannot produce RED — downgrade to YELLOW
             if parsed["status"] == "RED":

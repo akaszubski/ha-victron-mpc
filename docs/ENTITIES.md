@@ -200,7 +200,7 @@ All entities are grouped under a single **Victron MPC Battery Optimizer** device
 
 ---
 
-## Number Entities (12 Tunables)
+## Number Entities (10 Tunables)
 
 All decision thresholds are configurable via the UI -- no hardcoded values remain in the decision logic. Changes take effect on the next 5-minute optimization cycle.
 
@@ -211,8 +211,6 @@ All decision thresholds are configurable via the UI -- no hardcoded values remai
 | `number.…_battery_wear_cost` | Battery Wear Cost | 0.01 | 0.10 | 0.01 | $/kWh | 0.05 | Box |
 | `number.…_sunset_reward` | Sunset Reward | 0.01 | 0.10 | 0.01 | $/kWh | 0.04 | Box |
 | `number.…_overnight_hold_reward` | Overnight Hold Reward | 0.02 | 0.20 | 0.01 | $/kWh | 0.10 | Box |
-| `number.…_overnight_hold_price_full` | Overnight Hold Price (Full) | 0.05 | 0.50 | 0.01 | $/kWh | 0.15 | Box |
-| `number.…_overnight_hold_price_zero` | Overnight Hold Price (Zero) | 0.10 | 1.00 | 0.01 | $/kWh | 0.25 | Box |
 
 ### SoC Constraints
 

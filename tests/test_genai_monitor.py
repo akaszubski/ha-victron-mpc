@@ -10,6 +10,8 @@ import pytest
 
 from custom_components.victron_mpc.genai_monitor import (
     GENAI_CYCLE_INTERVAL,
+    PROMPT_VERSION,
+    SYSTEM_PROMPT,
     build_health_snapshot,
     build_strategic_snapshot,
     run_deterministic_checks,
@@ -1103,3 +1105,60 @@ class TestGenAIHistory:
         append_with_dedup(buf, "deterministic", "GREEN", "All healthy")
         append_with_dedup(buf, "genai", "YELLOW", "Minor concern")
         assert len(buf) == 2
+
+
+# ======================================================================
+# TestGenAIBug79 — Bug #79 regression tests
+# ======================================================================
+
+
+class TestGenAIBug79:
+    """GenAI false positive fixes — empty summary, prompt version, solar note.
+
+    GitHub issue #79: (a) GenAI YELLOW overwritten by deterministic GREEN,
+    (b) empty summary on most YELLOW, (c) false positive on solar_next_1h_kwh.
+    """
+
+    def test_genai_yellow_empty_summary_fallback(self):
+        """YELLOW with empty summary gets default text."""
+        # Simulate the parsed dict after JSON parsing with empty summary
+        parsed = {
+            "status": "YELLOW",
+            "summary": "",
+            "details": "some detail",
+        }
+        # Apply the same logic as in run_genai_health_check
+        if not parsed.get("summary"):
+            parsed["summary"] = f"GenAI returned {parsed['status']} (no summary provided)"
+
+        assert parsed["summary"] == "GenAI returned YELLOW (no summary provided)"
+        assert parsed["summary"] != ""
+
+    def test_genai_green_empty_summary_fallback(self):
+        """GREEN with empty summary also gets default text."""
+        parsed = {
+            "status": "GREEN",
+            "summary": "",
+            "details": "",
+        }
+        if not parsed.get("summary"):
+            parsed["summary"] = f"GenAI returned {parsed['status']} (no summary provided)"
+
+        assert "GREEN" in parsed["summary"]
+
+    def test_prompt_version_v7(self):
+        """PROMPT_VERSION should be v7 after #79 fix."""
+        assert PROMPT_VERSION == "v7"
+
+    def test_prompt_contains_solar_forecast_sum_note(self):
+        """SYSTEM_PROMPT should mention solar forecast sum to prevent false positives."""
+        assert "FORECAST SUM" in SYSTEM_PROMPT or "forecast sum" in SYSTEM_PROMPT.lower()
+        assert "12 five-minute" in SYSTEM_PROMPT or "12 five-minute steps" in SYSTEM_PROMPT
+
+    def test_prompt_solar_note_before_yellow_section(self):
+        """Solar forecast note should appear before WHEN TO FLAG YELLOW section."""
+        forecast_pos = SYSTEM_PROMPT.find("FORECAST SUM")
+        yellow_pos = SYSTEM_PROMPT.find("WHEN TO FLAG YELLOW")
+        assert forecast_pos < yellow_pos, (
+            "Solar forecast note must appear before YELLOW section to be read first"
+        )

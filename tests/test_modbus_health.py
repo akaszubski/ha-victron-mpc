@@ -620,9 +620,9 @@ class TestSystemIntents:
         assert len(SYSTEM_INTENTS) >= 7
 
     def test_each_intent_has_required_fields(self):
-        """Every intent has id, description, implementation, measurable."""
+        """Every intent has id and description (derived from principles)."""
         from custom_components.victron_mpc.config import SYSTEM_INTENTS
-        required = {"id", "description", "implementation", "measurable"}
+        required = {"id", "description"}
         for intent in SYSTEM_INTENTS:
             missing = required - intent.keys()
             assert not missing, f"Intent '{intent.get('id')}' missing: {missing}"
@@ -634,9 +634,9 @@ class TestSystemIntents:
         assert len(ids) == len(set(ids))
 
     def test_core_intents_declared(self):
-        """Critical intents exist: cost, sunset, resilience, health."""
+        """Critical intents exist: safety, cost, evening_readiness, battery_health."""
         from custom_components.victron_mpc.config import SYSTEM_INTENTS
         ids = {i["id"] for i in SYSTEM_INTENTS}
-        for required_id in ["cost_minimisation", "sunset_readiness",
-                            "overnight_resilience", "battery_health"]:
+        for required_id in ["safety", "cost", "evening_readiness",
+                            "battery_health"]:
             assert required_id in ids, f"Missing core intent: {required_id}"

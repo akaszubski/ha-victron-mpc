@@ -13,62 +13,17 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from .principles import DEFAULT_PRINCIPLES
+
 
 # ======================================================================
-# System Intents — declarative goals the optimizer translates into
-# constraints and objectives (TM Forum IAADE "Intent" phase).
-# These are WHAT the system should achieve, not HOW.
+# System Intents — backward-compatible list derived from the operating
+# principles defined in principles.py. These are WHAT the system should
+# achieve, not HOW.
 # ======================================================================
 
 SYSTEM_INTENTS: list[dict[str, str]] = [
-    {
-        "id": "cost_minimisation",
-        "description": "Minimise total electricity cost over the 24-hour horizon",
-        "implementation": "LP objective function (linprog cost vector)",
-        "measurable": "$/day actual vs grid-only baseline",
-    },
-    {
-        "id": "sunset_readiness",
-        "description": "Battery SoC >= 95% by sunset every day",
-        "implementation": "Hard LP constraint at sunset_step",
-        "measurable": "SoC at sunset (target: >= 95%)",
-    },
-    {
-        "id": "overnight_resilience",
-        "description": "Maintain SoC >= 30% from 22:00 to 06:00",
-        "implementation": "Hard LP constraint during overnight_steps",
-        "measurable": "Minimum overnight SoC (target: >= 30%)",
-    },
-    {
-        "id": "battery_health",
-        "description": "Minimise unnecessary cycling to preserve battery lifespan",
-        "implementation": "Wear cost ($0.02/kWh) in LP objective + 14-day cell balance",
-        "measurable": "Cycles/day, full charge interval",
-    },
-    {
-        "id": "self_sufficiency",
-        "description": "Prefer battery over grid when economically equivalent",
-        "implementation": "Grid import penalty ($0.02/kWh) in LP objective",
-        "measurable": "Grid import W during discharge (target: < 50W)",
-    },
-    {
-        "id": "spike_protection",
-        "description": "During price spikes, discharge battery to avoid grid purchase",
-        "implementation": "Override: spike → R2901=100 (discharge to 10%)",
-        "measurable": "Grid import during spikes (target: 0W)",
-    },
-    {
-        "id": "negative_price_capture",
-        "description": "During negative prices, charge battery (paid to consume)",
-        "implementation": "Override: negative price → R2901=1000 (charge to 100%)",
-        "measurable": "SoC increase during negative pricing",
-    },
-    {
-        "id": "forecast_confidence",
-        "description": "Discount solar forecast on bad weather days to avoid late charging",
-        "implementation": "Weather confidence discount (rain ×0.5, overcast ×0.7)",
-        "measurable": "Grid charge timing on rainy days",
-    },
+    p.to_intent_dict() for p in DEFAULT_PRINCIPLES
 ]
 
 
@@ -158,6 +113,20 @@ class MPCTunables:
     overnight_start_hour: int = 22
     overnight_end_hour: int = 6
 
+    # Morning refill window — used by scale_overnight_hold_reward to judge
+    # whether discharging overnight makes economic sense vs. refilling in
+    # the morning. See GitHub issue #80.
+    morning_start_hour: int = 6
+    morning_end_hour: int = 9
+
+    # Overnight arbitrage threshold: minimum (overnight_avg - morning_avg)
+    # spread in $/kWh before the LP is allowed to discharge freely overnight.
+    # Below this spread, the hold reward is preserved to prevent uneconomic
+    # wear-cost losses from same-price deferral. Default $0.10 gives ~2.8x
+    # safety margin over economic break-even ($0.035/kWh including wear +
+    # efficiency losses).
+    overnight_arbitrage_threshold: float = 0.10
+
     # Cell balancing — periodic full charge for battery health
     full_charge_interval_days: int = 14
 
@@ -175,8 +144,6 @@ class MPCTunables:
     amber_cautious_minutes: float = 15.0  # Tier 2→3 escalation (was 30)
     feedin_export_threshold: float = 0.10  # $/kWh — min FIT for spike export
     feedin_soc_threshold: float = 30.0  # % — min SoC to allow spike export
-    overnight_price_low: float = 0.15  # $/kWh — full hold reward below
-    overnight_price_high: float = 0.25  # $/kWh — zero hold reward above
 
     # Intraday correction — adjust day type based on actual vs expected yield
     intraday_early_hour: float = 8.0  # Start checking yield from this hour

@@ -35,9 +35,9 @@ class TestPromptVersion:
         version_number = PROMPT_VERSION[1:]
         assert version_number.isdigit(), f"Version number should be numeric, got {version_number!r}"
 
-    def test_prompt_version_is_v5(self):
-        """PROMPT_VERSION is v5 — added weather context to strategic snapshot."""
-        assert PROMPT_VERSION == "v5"
+    def test_prompt_version_is_v7(self):
+        """PROMPT_VERSION is v7 — added solar forecast sum note, empty summary fallback (#79)."""
+        assert PROMPT_VERSION == "v7"
 
 
 # ======================================================================

@@ -55,20 +55,23 @@ All values are in $/kWh to be directly comparable with electricity prices.
 | Terminal Reward | $0.03 | Prevents drain-to-zero at horizon end |
 | Overnight Hold Reward | $0.10 (max) | Preserves charge for morning -- price-scaled (see below) |
 
-### Price-Scaled Overnight Hold Reward
+### Arbitrage-Spread Overnight Hold Reward
 
-The overnight hold reward is not a fixed value. Before each optimization, it is scaled based on the average overnight grid price. The scaling thresholds are configurable via two number entities:
+The overnight hold reward is not a fixed value. Before each optimization, it is scaled based on the **arbitrage spread** between the average overnight price and the average morning replacement price (the window when solar is not yet generating and the grid would be needed to refill the battery). This approach correctly captures whether holding charge overnight is actually worthwhile — holding is only valuable if overnight grid is cheaper than morning grid.
 
-- **Overnight Hold Price (Full)** (`number.victron_mpc_battery_optimizer_overnight_hold_price_full`, default $0.15): Full hold reward applies below this price
-- **Overnight Hold Price (Zero)** (`number.victron_mpc_battery_optimizer_overnight_hold_price_zero`, default $0.25): Hold reward drops to zero above this price
+The scaling uses three internal parameters (not exposed as UI number entities):
 
-| Overnight Price | Scaled Reward | Effect |
-|----------------|---------------|--------|
-| <= $0.15/kWh (Hold Price Full) | Full $0.10 | Preserve battery -- grid is genuinely cheap overnight |
-| $0.20/kWh | ~$0.05 | Moderate hold (linear interpolation) |
-| >= $0.25/kWh (Hold Price Zero) | $0.00 | No hold incentive -- discharging overnight saves money |
+- **`morning_start_hour`** (default 6): Start of the morning refill window
+- **`morning_end_hour`** (default 9): End of the morning refill window
+- **`overnight_arbitrage_threshold`** (default $0.10/kWh): Spread above which no hold reward applies
 
-This means the optimizer naturally discharges during moderate overnight pricing and holds when overnight rates are genuinely cheap.
+| Overnight-vs-Morning Spread | Scaled Reward | Effect |
+|-----------------------------|---------------|--------|
+| Spread < 0 (overnight > morning) | $0.00 | No hold -- overnight is more expensive; discharge and buy cheap in the morning |
+| 0 <= Spread < $0.10 (threshold) | $0.00 to $0.10 (linear) | Moderate hold incentive proportional to the saving |
+| Spread >= $0.10 | Full $0.10 | Strong hold -- overnight is meaningfully cheaper than morning replacement |
+
+This means the optimizer holds when there is a genuine overnight-to-morning price advantage and freely discharges when overnight rates are higher than or equal to morning rates.
 
 ### Constraints
 

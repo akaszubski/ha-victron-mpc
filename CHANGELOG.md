@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Mode thrashing eliminated (#78)**: Added `MODE_PERSISTENCE_THRESHOLD_KW` and `previous_mode` tracking in the optimizer. The coordinator now suppresses YELLOW GenAI health assessments when the current mode matches the previous mode, preventing spurious flip-flop between modes during stable operating conditions.
+- **Overnight battery drain corrected (#80)**: Replaced the absolute overnight price threshold logic (`overnight_price_low`/`overnight_price_high`) with an arbitrage-spread model. The overnight hold reward is now scaled by the spread between average overnight price and average morning replacement price (6-9am window). Holding overnight is only incentivized when overnight grid is genuinely cheaper than morning grid — not simply because overnight prices are low in absolute terms. Two number entities (`overnight_hold_price_full`, `overnight_hold_price_zero`) removed; three internal config parameters added (`morning_start_hour`, `morning_end_hour`, `overnight_arbitrage_threshold`).
+- **GenAI false positive YELLOW rate halved (#79)**: GenAI prompt advanced to v7 with explicit solar forecast confidence note, empty summary fallback (returns GREEN when the LLM produces no actionable summary), and YELLOW persistence suppression in the coordinator. Together these changes reduce spurious YELLOW alerts caused by vague or empty GenAI responses.
+
+### Changed
+
+- `utils.scale_overnight_hold_reward()` signature changed: removed `price_low`/`price_high` parameters, added `morning_steps`, `arbitrage_threshold`, and `battery_wear_cost`/`discharge_penalty` parameters.
+- `genai_monitor.py` PROMPT_VERSION bumped from v5 to v7.
+
+### Added
+
+- 144 net new tests covering GenAI audit log, prompt version validation, YELLOW persistence, and overnight hold reward arbitrage logic.
+
 ## [1.0.0] - 2026-04-03
 
 ### Changed

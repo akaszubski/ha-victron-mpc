@@ -155,6 +155,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_register_value: int | None = None
         self._last_feedin_value: int | None = None
         self._last_mode: str | None = None
+        self._previous_mode: str | None = None  # Mode persistence for thrashing prevention (#78)
         self._last_full_charge_check: datetime | None = None
         self._force_full_charge: bool = False
 
@@ -355,6 +356,13 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 tunables.horizon_steps,
                 tunables.dt_hours,
             )
+            morning_steps = _compute_overnight_steps(
+                now,
+                tunables.morning_start_hour,
+                tunables.morning_end_hour,
+                tunables.horizon_steps,
+                tunables.dt_hours,
+            )
 
             # Cell balancing check
             force_full_charge = self._check_full_charge_needed(
@@ -376,13 +384,16 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 for i in range(tunables.horizon_steps)
             ]
 
-            # Scale overnight hold reward by price
+            # Scale overnight hold reward by overnight-vs-morning price spread.
+            # See scale_overnight_hold_reward docstring and GitHub issue #80.
             overnight_hold = scale_overnight_hold_reward(
                 tunables.overnight_hold_reward,
                 forecasts["buy_price"],
                 overnight_steps,
-                price_low=tunables.overnight_price_low,
-                price_high=tunables.overnight_price_high,
+                morning_steps,
+                arbitrage_threshold=tunables.overnight_arbitrage_threshold,
+                battery_wear_cost=tunables.battery_wear_cost,
+                discharge_penalty=tunables.soc_profile_overnight + tunables.grid_import_penalty,
             )
 
             opt_input = OptInput(
@@ -427,6 +438,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 overnight_steps=overnight_steps,
                 force_full_charge=force_full_charge,
                 sunset_soc_target_pct=95.0,  # Fixed 95% — dynamic target was too low on overcast days
+                previous_mode=self._previous_mode,
             )
 
             # ----------------------------------------------------------
@@ -505,6 +517,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             is_spike = self._is_spike_active()
             override_reason: str | None = None
 
+            override_principle: str | None = None
             if buy_price_now < 0:
                 # Negative pricing — charge from grid (we're paid to consume)
                 target_register = 1000
@@ -512,6 +525,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 override_reason = (
                     f"Negative pricing (${buy_price_now:.3f}/kWh) — charging"
                 )
+                override_principle = "negative_capture"
             elif is_spike or buy_price_now > tunables.spike_threshold:
                 # Spike — discharge to minimise grid usage
                 target_register = 100
@@ -519,11 +533,20 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 override_reason = (
                     f"Spike active (${buy_price_now:.3f}/kWh) — discharging"
                 )
+                override_principle = "spike_protection"
             else:
                 # Normal — use optimizer decision
                 target_register = result.target_register
                 mode = result.mode
                 override_reason = None
+
+            # Annotate intent with override information
+            if override_reason and result.intent:
+                result.intent["override_applied"] = True
+                result.intent["override_principle"] = override_principle
+                result.intent["override_note"] = (
+                    "Post-LP override active — LP decision replaced"
+                )
 
             # #37 hysteresis monitoring — log when BMS rounding triggers hold
             if mode == "hold" and "BMS rounding" in (result.reason or ""):
@@ -583,6 +606,7 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
 
             self._last_mode = mode
+            self._previous_mode = mode  # Mode persistence for next cycle (#78)
 
             # ----------------------------------------------------------
             # Phase 7a: Audit log — persist every decision (#56)
@@ -760,13 +784,21 @@ class VictronMPCCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         notification_id="mpc_deterministic_alert",
                     )
             else:
-                # All deterministic checks passed
-                self._last_genai_result = {
-                    "status": "GREEN",
-                    "summary": "All operational checks passed",
-                    "details": "",
-                    "source": "deterministic",
-                }
+                # All deterministic checks passed.
+                # Preserve GenAI YELLOW verdict until next GenAI cycle — don't let
+                # deterministic GREEN overwrite it. GenAI runs hourly and should
+                # retain its verdict for that full hour. GitHub issue #79.
+                if (self._last_genai_result.get("source") == "genai"
+                        and self._last_genai_result.get("status") == "YELLOW"):
+                    # Keep GenAI YELLOW — deterministic GREEN doesn't override
+                    pass
+                else:
+                    self._last_genai_result = {
+                        "status": "GREEN",
+                        "summary": "All operational checks passed",
+                        "details": "",
+                        "source": "deterministic",
+                    }
                 if self._genai_consecutive_red > 0:
                     LOGGER.info(
                         "Deterministic cleared after %d consecutive RED",
